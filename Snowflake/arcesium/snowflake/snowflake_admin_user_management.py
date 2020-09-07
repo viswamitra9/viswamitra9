@@ -1,3 +1,6 @@
+# Owner       : Srinivas Oguri
+# Description : This script is used to crate/delete admin(dba) users and reset the user passwords
+
 import textwrap
 import argparse
 import snowflake.connector
@@ -11,16 +14,15 @@ from datetime import datetime
 sys.path.append('/g/dba/oguri/dba/snowflake/')
 import vaultutil
 
-
 logger  = logging.getLogger()
-logfile = '/g/dba/logs/snowflake/snowflake_{}.log'.format(datetime.now().strftime("%d-%b-%Y-%H-%M-%S"))
+logfile = '/g/dba/logs/snowflake/snowflake_admin_user_{}.log'.format(datetime.now().strftime("%d-%b-%Y-%H-%M-%S"))
 
 
 def set_logging():
     # default log level for root handler
     logger.setLevel(logging.INFO)
     # creating file handler
-    ch = logging.FileHandler()
+    ch = logging.FileHandler(filename=logfile)
     ch.setLevel(logging.INFO)
     # creating stream handler
     sh = logging.StreamHandler()
@@ -42,7 +44,8 @@ def sql_connect():
     """
     try:
         conn_sql_dest = pyodbc.connect(
-            'DRIVER={Easysoft ODBC-SQL Server};Server=DBMONITOR.ia55.net;UID=;PWD=;ServerSPN=MSSQLSvc/dbmonitor1b.win.ia55.net;APP=DBRefreshUtil;')
+            'DRIVER={Easysoft ODBC-SQL Server};Server=DBMONITOR.ia55.net;UID=;'
+            'PWD=;ServerSPN=MSSQLSvc/dbmonitor1b.win.ia55.net;APP=Snowflake_admin_management;')
         cur_sql_dest = conn_sql_dest.cursor()
         conn_sql_dest.autocommit = True
         return cur_sql_dest, conn_sql_dest
@@ -84,9 +87,9 @@ def get_admin_connection(account, pod):
     RETURNS:
         returns connection, cursor
     """
-    username = 'sa'
     password = vaultutil.get_user_password('/secret/v2/snowflake/{}/db/sa'.format(pod))
-    connection, cursor = get_snowflake_connection(account, username, password)
+    password = json.loads(password)['password']
+    connection, cursor = get_snowflake_connection(account=account, password=password, username='sa')
     try:
         cursor.execute("create database if not exists audit_archive")
         cursor.execute("use database audit_archive")
@@ -98,13 +101,14 @@ def get_admin_connection(account, pod):
         return connection, cursor
     except Exception as e:
         logger.error("error while creating super user connection to account : {}".format(account))
-        sys.exit(1)
+        exit(1)
 
 
 def get_unique_password():
     """
     PURPOSE:
-        Need to maintain the unique password for users across all snowflake accounts.
+        As snowflake accounts are accessable from any pod we Need to maintain the unique password for users
+        across all snowflake accounts. So we are using sequences and md5 to get the unique passwords.
         Login to terra account, get md5 of sequence number and convert random part of string to upper case.
     RETURNS:
         returns password
@@ -139,15 +143,15 @@ def reset_admin_user_password(account, username, pod):
         logger.info("Password reset for user {}".format(username))
         vaultpath = "/secret/v2/snowflake/{}/db/{}".format(pod, username)
         logger.info("writing user {} password to vault path {}".format(username, vaultpath))
+        cname = '{}.snowflakecomputing.com'.format(account)
+        # write password to vault
+        # As this is for dba users we setting the audit_archive as default database
+        temp_secret = {'cname': cname, 'account': account, 'password': password, 'database': 'audit_archive'}
+        secret = json.dumps(temp_secret)
+        vaultutil.write_secret_to_vault(vaultpath, secret)
     except Exception as e:
         logger.error("error while user password reset, error : {}".format(str(e)))
         sys.exit(1)
-    # write password to vault
-    # As this is for dba users we setting the audit_archive as default database
-    cname = '{}.snowflakecomputing.com'.format(account)
-    temp_secret = {'cname': cname, 'account': account, 'password': password, 'database': 'audit_archive'}
-    secret = json.dumps(temp_secret)
-    vaultutil.write_secret_to_vault(vaultpath, secret)
 
 
 def create_admin_user(account, username, pod):
@@ -167,18 +171,18 @@ def create_admin_user(account, username, pod):
                        .format(username, password))
         cursor.execute("grant role accountadmin to user {}".format(username))
         logger.info("Created admin user {}".format(username))
+        # write password to vault
+        # As this is for dba users we setting the audit_archive as default database
+        vaultpath = "/secret/v2/snowflake/{}/db/{}".format(pod, username)
+        logger.info("writing user {} password to vault path {}".format(username, vaultpath))
+        cname = "{}.snowflakecomputing.com".format(account)
+        temp_secret = {'cname': cname, 'account': account, 'password': password, 'database': 'audit_archive'}
+        secret = json.dumps(temp_secret)
+        vaultutil.write_secret_to_vault(vaultpath, secret)
+        logger.info("wrote password to vault")
     except Exception as e:
         logger.error("error occurred while creating user , error : {}".format(str(e)))
         sys.exit(1)
-    # write password to vault
-    # As this is for dba users we setting the audit_archive as default database
-    vaultpath = "/secret/v2/snowflake/{}/db/{}".format(pod, username)
-    logger.info("writing user {} password to vault path {}".format(username, vaultpath))
-    cname = "{}.snowflakecomputing.com".format(account)
-    temp_secret = {'cname': cname, 'account': account, 'password': password, 'database': 'audit_archive'}
-    secret = json.dumps(temp_secret)
-    vaultutil.write_secret_to_vault(vaultpath, secret)
-    logger.info("wrote password to vault")
 
 
 def drop_admin_user(account, username, pod):
