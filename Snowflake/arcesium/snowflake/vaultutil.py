@@ -4,6 +4,7 @@ import time
 
 logger = logging.getLogger('__name__')
 
+WAIT_TIME = 10
 
 def get_user_password(vaultpath):
     """
@@ -38,7 +39,7 @@ def get_user_password(vaultpath):
             else:
                 logger.warning(
                     "Error while reading vault path {},reading again : {} attempt".format(vaultpath, retry_count))
-                time.sleep(10)
+                time.sleep(WAIT_TIME)
                 retry_count = retry_count + 1
                 continue
         return 1
@@ -73,10 +74,43 @@ def write_secret_to_vault(vaultpath,secret):
                 retry_count = retry_count + 1
                 logger.warning(
                     "Error while writing password to vault path {}, retrying : {} attempt".format(vaultpath, retry_count))
-                time.sleep(10)
+                time.sleep(WAIT_TIME)
         logger.error("Error occurred while writing to vault {}, error : {}".format(vaultpath, str(error)))
         exit(1)
     except Exception as e:
         logger.error("Failed to write secret to vault : {} with error : {}".format(vaultpath, e))
         logger.exception("Exception while writing to vault {}".format(str(e)))
         raise Exception("Failed to write secret to vault : {} with error : {}".format(vaultpath, e))
+
+
+def delete_secret_from_vault(vaultpath):
+    """
+    PURPOSE:
+        delete vault entry for given user
+    INPUTS:
+        vaultpath, secret
+    """
+    try:
+        # Retry count variable
+        retry_count = 0
+        # error variable to store error message
+        error = ''
+        while retry_count <= 10:
+            command = "vault delete {}".format(vaultpath)
+            writetovault = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=True)
+            (output, error) = writetovault.communicate()
+            if writetovault.returncode == 0:
+                logger.info("secret deleted successfully to vault path {}".format(vaultpath))
+                return
+            else:
+                retry_count = retry_count + 1
+                logger.warning(
+                    "Error while deleting secret from vault path {}, "
+                    "retrying : {} attempt".format(vaultpath, retry_count))
+                time.sleep(WAIT_TIME)
+        logger.error("Error occurred while deleting secret from vault {}, error : {}".format(vaultpath, str(error)))
+        exit(1)
+    except Exception as e:
+        logger.error("Failed to delete secret from vault : {} with error : {}".format(vaultpath, e))
+        logger.exception("Exception while deleting secret from vault {}".format(str(e)))
+        raise Exception("Failed to delete secret from vault : {} with error : {}".format(vaultpath, e))
