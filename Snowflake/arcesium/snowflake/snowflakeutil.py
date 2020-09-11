@@ -286,6 +286,8 @@ def create_user(account, username, pod, user_type, user_mail, dbname='arcesium_d
     INPUTS:
         account (format is account.<region>.privatelink), username, pod
     """
+    # create SQL connection
+    sql_cur, sql_conn = sql_connect()
     assert user_type in USER_TYPE, "usertype should be anyone of {}".format(USER_TYPE)
     # role for every user with unique password
     user_role = "{}_role".format(username)
@@ -331,16 +333,18 @@ def create_user(account, username, pod, user_type, user_mail, dbname='arcesium_d
         cursor.execute("alter user {} set DAYS_TO_EXPIRY  = {}".format(username, kwargs['retention']))
     # create user for app_team
     if user_type == 'app_team':
-        if 'env' not in kwargs:
-            raise Exception("env (environment) argument is required for app team (human) user creation")
-        if kwargs['env'] not in ['dev', 'qa']:
+        sql_cur.execute("select lower(env) from dbainfra.dbo.database_server_inventory "
+                        "where lower(pod)='{}' and lower(servertype)='snowflake'".format(str(pod).lower()))
+        result = sql_cur.fetchall()
+        for i in result:
+            env = i[0]
+        if env not in ['dev', 'qa']:
             cursor.execute("drop role {}".format(user_role))
             cursor.execute("drop user {}".format(username))
             raise Exception("application team(human) users are not created in prod or uat environment")
         cursor.execute("grant role {} to role {}".format(db_owner, user_role))
         cursor.execute("grant role warehouse_owner to role {}".format(user_role))
     # write password to vault and make entry into SQL server
-    sql_cur, sql_conn = sql_connect()
     if user_type == 'app':
         vaultpath   = APP_VAULT.replace("$POD", pod).replace("$APPNAME", kwargs['appname'])\
             .replace("$DBNAME", dbname).replace("$USERNAME", username)
@@ -645,3 +649,28 @@ def verify_user_permissions(account, username, pod):
     connection.close()
     logger.info("Summary: user: {}, account: {}, pod: {} \n\n".format(username,account,pod))
     logger.info(tabulate(operations, headers=['Operation', 'Status']))
+
+
+def drop_database(account, database, pod):
+    """
+    PURPOSE:
+        drop database from given account
+    Args:
+        account: ex: arc1000.us-east-1.privatelink
+        database: ex: arcesium_data_warehouse
+        pod: ex: terra
+    Returns:
+    """
+    try:
+        logger.info("Creating super user connection")
+        connection, cursor = get_admin_connection(account, pod)
+        logger.info("Created super user connection")
+        cursor.execute("use role accountadmin")
+        cursor.execute("drop database if exists {} cascade".format(database))
+        cursor.execute("drop role if exists {}_reader".format(database))
+        cursor.execute("drop role if exists {}_owner".format(database))
+        logger.info("Successfully dropped database {} and roles from account {}".format(database, account))
+    except Exception as e:
+        logger.exception("Failed to drop database {} and roles from account {} "
+                         "with error".format(database, account, str(e)))
+        raise Exception("Failed to drop database {} in account {}".format(database, account))
