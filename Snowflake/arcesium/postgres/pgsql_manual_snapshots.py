@@ -29,9 +29,10 @@ config = Config(
 )
 
 # multi processing related parameters
-MAX_PROCESSES = 5
-SLEEP_TIME    = 600
-MAX_RETRIES   = 10
+MAX_PROCESSES        = 5
+SLEEP_TIME           = 300
+MAX_RETRIES          = 20
+SQL_CONN_RETRY_COUNT = 5
 
 logger = logging.getLogger('pgsql-snapshot')
 # creating file handler
@@ -65,16 +66,19 @@ def sql_connect():
     Returns:
     cursor and connection
     """
-    try:
-        conn_sql_dest = pyodbc.connect(
-            'DRIVER={Easysoft ODBC-SQL Server};'
-            'Server=DBMONITOR1B.win.ia55.net;UID=;PWD=;ServerSPN=MSSQLSvc/dbmonitor1b.win.ia55.net;APP=pgsql;')
-        cur_sql_dest = conn_sql_dest.cursor()
-        conn_sql_dest.autocommit = True
-        return cur_sql_dest, conn_sql_dest
-    except Exception as e:
-        logging.error("Error while creating database connection to DBMONITOR server {}".format(str(e)))
-        raise Exception("Error while creating database connection to DBMONITOR server {}".format(str(e)))
+    retry_count = 0
+    while retry_count < SQL_CONN_RETRY_COUNT:
+        try:
+            conn_sql_dest = pyodbc.connect(
+                'DRIVER={Easysoft ODBC-SQL Server};'
+                'Server=DBMONITOR1B.win.ia55.net;UID=;PWD=;ServerSPN=MSSQLSvc/dbmonitor1b.win.ia55.net;APP=pgsql;')
+            cur_sql_dest = conn_sql_dest.cursor()
+            conn_sql_dest.autocommit = True
+            return cur_sql_dest, conn_sql_dest
+        except Exception as e:
+            logging.error("Error while creating database connection to DBMONITOR server {}, trying again {}".format(str(e), retry_count))
+    retry_count += 1
+    raise Exception("Error while creating database connection to DBMONITOR server {}".format(str(e)))
 
 
 def raise_radar_alert(alert_description):
@@ -83,11 +87,10 @@ def raise_radar_alert(alert_description):
     request.alert_key         = 'PostgreSQL-Generate-Snapshot-Failure'
     request.alert_summary     = 'PostgreSQL snapshot generation failure for production instances'
     request.alert_class       = 'PAGE'
-    request.alert_description = alert_description + " Please check the {} file " \
-            "for details and reference the {} documentation " \
-            "for more information.".format(logfile,'http://wiki.ia55.net/display/TECHDOCS/PostgreSQL+RDS+Snapshots')
+    request.alert_description = alert_description + " Please check the {} file for details and reference the {} documentation for more information.".format(logfile,'http://wiki.ia55.net/display/TECHDOCS/PostgreSQL+RDS+Snapshots')
     request.alert_severity    = 'CRITICAL'
     request.alertKB           = 'http://wiki.ia55.net/display/TECHDOCS/PostgreSQL+RDS+Snapshots'
+
     service = RadarService()
     try:
         logger.error(request.alert_description)
@@ -146,7 +149,6 @@ def create_snapshot(pod, region, instance, account='prod'):
     try:
         rds.create_db_cluster_snapshot(DBClusterSnapshotIdentifier=snapshotname, DBClusterIdentifier=cluster)
         snapshot_arn = wait_snapshot_available(rds, snapshotname)
-        logger.info("Making entry for snapshot {} into dbainfra.dbo.monthly_snapshots table".format(snapshotname))
         make_entry_for_snapshot(region=region, account=account, snapshotname=snapshotname, arn=snapshot_arn, pod=pod)
         logger.info("snapshot {} creation completed successfully for instance {}".format(snapshotname, instance))
     except ClientError as e:
@@ -174,7 +176,8 @@ def wait_snapshot_available(rds, snapshotname):
     try:
         response = rds.describe_db_cluster_snapshots(DBClusterSnapshotIdentifier=snapshotname)
         while response['DBClusterSnapshots'][0]['Status'] != 'available':
-            logger.info("still waiting for snapshot : {} to complete, retry count {}".format(snapshotname,retry_count))
+            logger.info("still waiting for snapshot : {} to complete, "
+                        "retry count : {}".format(snapshotname, retry_count))
             time.sleep(SLEEP_TIME)
             response = rds.describe_db_cluster_snapshots(DBClusterSnapshotIdentifier=snapshotname)
             retry_count += 1
@@ -184,17 +187,17 @@ def wait_snapshot_available(rds, snapshotname):
                 """
                 logger.error("Manual snapshot for instance {} is running for more than 100 min, check log file "
                              "more details".format(str(snapshotname).split('-')[0]))
-                # alert_description = "Manual snapshot for instance {} is running for more than 100mins , " \
-                # "Please check the job PostgreSQL_prod_snapshots " \
-                #                     "for more details".format(str(snapshotname).split('-')[0])
-                # raise_radar_alert(alert_description)
-        logger.info("snapshot : {} created successfully".format(snapshotname))
+                alert_description = "Manual snapshot for instance {} is running for more than 100 min, " \
+                                    "Please check the job PostgreSQL_prod_snapshots for more " \
+                                    "details".format(str(snapshotname).split('-')[0])
+                raise_radar_alert(alert_description)
+                exit(1)
         return response['DBClusterSnapshots'][0]['DBClusterSnapshotArn']
     except ClientError as e:
         logger.error("Error while creating snapshot {} , error : {}".format(snapshotname,e))
-        # alert_description = "Error while taking snapshot {}, Please check error log for
-        # more details".format(snapshotname)
-        # raise_radar_alert(alert_description)
+        alert_description = "Error while taking snapshot {}, " \
+                            "Please check error log for more details".format(snapshotname)
+        raise_radar_alert(alert_description)
         exit(1)
 
 
@@ -208,24 +211,25 @@ def make_entry_for_snapshot(pod, region, snapshotname, arn, account='prod'):
         account: "ex: prod"
     Returns: null
     """
-    retry_flag = True
-    retry_count = 0
-    while retry_flag and retry_count < 5:
-        try:
-            query = "insert into dbainfra.dbo.monthly_snapshots" \
-            "(s_c_time,pod,region,account,snapshotname,arn,deleted) values (GETDATE()" \
-            ",'{}','{}','{}','{}','{}',0)".format(str(pod), str(region), str(account), str(snapshotname), str(arn))
-            logger.info("Query : {}".format(query))
-            cur_sql.execute(query)
-            conn_sql.commit()
-            retry_flag = False
-        except Exception as ex:
-            logger.error("Error while making an entry for snapshot : {}".format(str(ex)))
-            retry_count = retry_count + 1
-            logger.info("Trying again to insert , retry count : {}".format(retry_count))
-            # alert_description = "Error while taking rds monthly backup, not able to connect dbmonitor1b"
-            # raise_radar_alert(alert_description)
-            exit(1)
+    cur_sql, conn_sql = sql_connect()
+    try:
+        query = "SELECT count(*) FROM dbainfra.dbo.monthly_snapshots  WHERE arn = '{}'".format(arn)
+        cur_sql.execute(query)
+        result = cur_sql.fetchone()
+        if result:
+            if result[0] == 0:
+                query = "insert into " \
+                        "dbainfra.dbo.monthly_snapshots(s_c_time,pod,region,account,snapshotname,arn,deleted) " \
+                        "values ({},'{}','{}','{}','{}','{}','{}')".format('GETDATE()',pod,region,account,snapshotname,arn,0)
+                cur_sql.execute(query)
+            else:
+                logger.info("Entry for snapshot {} already exists".format(snapshotname))
+        conn_sql.commit()
+    except Exception as ex:
+        logger.error("Error while making an entry for snapshot : {}".format(str(ex)))
+        # alert_description = "Error while taking rds monthly backup, not able to connect dbmonitor1b"
+        # raise_radar_alert(alert_description)
+        exit(1)
 
 
 def get_prod_instances():
@@ -309,7 +313,6 @@ def main():
                 pod      = temp[2]
                 process  = Process(target=create_snapshot, args=(pod, region, instance,))
                 process.start()
-                logger.info("Started backup of instance : {} process id is : {}".format(instance, process.pid))
                 process_count += 1
                 current_running[instance] = process
             # reset the variable back to zero, to start the processes again
@@ -321,11 +324,12 @@ def main():
                 current_running_proc.join()
                 # check the return code of the process
                 if current_running_proc.exitcode != 0:
-                    logger.error("process with id {} failed to take backup of {}".format(current_running_proc.pid,inst))
+                    logger.error("process with id {} taking backup of instance {} "
+                                 "is failed".format(current_running_proc.pid, inst))
                     failed_instances.append(inst)
     if len(failed_instances) > 0:
-        alert_description = "An error was encountered while generating a snapshot for " \
-                            "one or more instances {} ".format(failed_instances)
+        alert_description = "An error was encountered while generating a " \
+                            "snapshot for one or more instances {} ".format(failed_instances)
         raise_radar_alert(alert_description)
     # closing the database connection
     conn_sql.close()

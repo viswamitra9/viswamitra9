@@ -4,7 +4,7 @@ import time
 
 logger = logging.getLogger('__name__')
 
-WAIT_TIME = 10
+sleep_time = 10
 
 def get_user_password(vaultpath):
     """
@@ -39,7 +39,7 @@ def get_user_password(vaultpath):
             else:
                 logger.warning(
                     "Error while reading vault path {},reading again : {} attempt".format(vaultpath, retry_count))
-                time.sleep(WAIT_TIME)
+                time.sleep(sleep_time)
                 retry_count = retry_count + 1
                 continue
         return 1
@@ -74,7 +74,7 @@ def write_secret_to_vault(vaultpath,secret):
                 retry_count = retry_count + 1
                 logger.warning(
                     "Error while writing password to vault path {}, retrying : {} attempt".format(vaultpath, retry_count))
-                time.sleep(WAIT_TIME)
+                time.sleep(sleep_time)
         logger.error("Error occurred while writing to vault {}, error : {}".format(vaultpath, str(error)))
         exit(1)
     except Exception as e:
@@ -107,7 +107,7 @@ def delete_secret_from_vault(vaultpath):
                 logger.warning(
                     "Error while deleting secret from vault path {}, "
                     "retrying : {} attempt".format(vaultpath, retry_count))
-                time.sleep(WAIT_TIME)
+                time.sleep(sleep_time)
         logger.error("Error occurred while deleting secret from vault {}, error : {}".format(vaultpath, str(error)))
         exit(1)
     except Exception as e:

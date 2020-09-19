@@ -22,6 +22,10 @@ from tabulate import tabulate
 
 import arcesium.snowflake.vaultutil as vaultutil
 
+# packages for radar alert
+from arcesium.radar.client import SendAlertRequest
+from arcesium.radar.client import RadarService
+
 logger = logging.getLogger()
 
 # type of users allowed to create
@@ -68,6 +72,33 @@ def setup_logging(logfile):
     logger.addHandler(ch)
     logger.addHandler(sh)
     return logger
+
+
+def raise_radar_alert(alert_description):
+    """
+    PURPOSE:
+        raise a radar alert
+    Args:
+        alert_description:
+    Returns:
+    """
+    request = SendAlertRequest()
+    request.alert_source      = 'dba'
+    request.alert_key         = 'Snowflake_Account_Monitoring'
+    request.alert_summary     = 'Error occurred while accessing Snowflake Account'
+    request.alert_class       = 'PAGE'
+    request.alert_description = alert_description + " Please check the documentation for more " \
+                                "information.".format('http://wiki.ia55.net/pages/'
+                                                      'viewpage.action?spaceKey=TECHDOCS&title=Snowflake+Monitoring')
+    request.alert_severity    = 'CRITICAL'
+    request.alertKB           = 'http://wiki.ia55.net/pages/viewpage.action?spaceKey=TECHDOCS&title=Snowflake+Monitoring'
+
+    service = RadarService()
+    try:
+        logger.error(request.alert_description)
+        print(service.publish_alert(request, radar_domain='prod'))
+    except Exception as err:
+        logger.error("Error occurred while raising radar alert {}".format(str(err)))
 
 
 def sql_connect():
@@ -1077,3 +1108,81 @@ def monitor_warehouse_utilization(account, pod):
     # release the resources
     connection.close()
 
+
+def snowflake_account_monitoring(account, pod):
+    """
+    PURPOSE:
+        this function is to monitor the Snowflake account. Below are the items will be monitored
+        1. Connectivity
+        2. virtual warehouse
+        3. Snowflake(login history etc) database access
+        4. Storage failure
+    Args:
+        account: arc1000.us-east-1.privatelink
+        pod: terra
+    Returns:
+    """
+    account_monitor = {}
+    # check connection to account
+    try:
+        logger.info("Creating super user connection to account {} pod {}".format(account, pod))
+        connection, cursor = get_admin_connection(account=account, pod=pod)
+        cursor.execute("select current_timestamp")
+        if cursor.rowcount > 0:
+            account_monitor['CONNECTION STATUS'] = 'SUCCESS'
+            logger.info("Connection created successfully")
+    except Exception as e:
+        account_monitor['CONNECTION STATUS'] = 'FAILED'
+        logger.info("Connection creation failed with error {}".format(e))
+        alert_description = "Creating connection to pod {} or account {} failed with error {}".format(pod, account, str(e))
+        raise_radar_alert(alert_description)
+        raise Exception("Error occurred while creating connection to Snowflake account {} or pod {}".format(account, pod))
+    # check virtual warehouse creation
+    alert_description = ''
+    try:
+        cursor.execute("create or replace warehouse snowflake_account_monitoring")
+        account_monitor['VIRTUAL WAREHOUSE'] = 'SUCCESS'
+        logger.info("Accessing virtual warehouse is successful")
+    except Exception as e:
+        account_monitor['VIRTUAL WAREHOUSE'] = 'FAILED'
+        logger.info("Virtual warehouse creation failed with error {}".format(e))
+        alert_description += "Error encountered while accessing Snowflake virtual warehouse in account {} \n".format(account)
+        # check the storage
+    try:
+        cursor.execute("use warehouse snowflake_account_monitoring")
+        cursor.execute("create or replace table audit_archive.public.sf_monitoring_test(id int)")
+        cursor.execute("insert into audit_archive.public.sf_monitoring_test select seq4() "
+                       "from table(generator(rowcount => 100))")
+        account_monitor['Storage Access'] = 'SUCCESS'
+        logger.info("Accessing storage is successful")
+    except Exception as e:
+        account_monitor['Storage Access'] = 'FAILED'
+        logger.info("Accessing storage failed with error {}".format(e))
+        alert_description += "Error encountered while accessing Snowflake storage in account {} \n".format(account)
+    # access login history
+    try:
+        cursor.execute("use warehouse snowflake_account_monitoring")
+        cursor.execute("select count(*) from snowflake.account_usage.query_history "
+                       "where START_TIME > dateadd(hour, -6,current_timestamp)")
+        account_monitor['Metadata Access'] = 'SUCCESS'
+        logger.info("Accessing login history is successful")
+    except Exception as e:
+        account_monitor['Metadata Access'] = 'FAILED'
+        logger.info("Accessing login history failed with error {}".format(e))
+        alert_description += "Error encountered while accessing Snowflake metadata in account {} \n".format(account)
+    for i in account_monitor.values():
+        if i == 'FAILED':
+            logger.info("Some of the resources are not working in account {} or pod {}".format(account,pod))
+            alert_description += "Some of the resources are not working in account {} or pod {} \n".format(account,pod)
+            raise_radar_alert(alert_description)
+            raise Exception("Some of the resources are not working in account {} or pod".format(account, pod))
+    logger.info("Account : {} is accessible and all resources are working fine".format(account))
+    print("Account : {} is accessible and all resources are working fine".format(account))
+
+
+def snowflake_cost_utilization_report():
+    """
+    PURPOSE:
+       This function is to monitor the Snowflake cost utilization and send a report of cost every 6 months for all pods.
+    Returns:
+    """

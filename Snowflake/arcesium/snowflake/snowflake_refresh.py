@@ -27,7 +27,7 @@ logger = logging.getLogger()
 alert_source   = "dba"
 alert_class    = "Page"
 alert_severity = "CRITICAL",
-alert_key      = "Snowflake refresh"
+alert_key      = "Snowflake database refresh"
 
 
 def setup_logging(logfile):
@@ -46,7 +46,6 @@ def setup_logging(logfile):
     # add the handlers to the logger object
     logger.addHandler(ch)
     logger.addHandler(sh)
-    return logger
 
 
 def parse_arguments():
@@ -77,32 +76,33 @@ def update_current_running_status(sourceservername, destinationservername, statu
 
 def main():
     # parse input arguments and get variables
-    args = parse_arguments()
-    source_pod = args.source_pod
+    args            = parse_arguments()
+    source_pod      = args.source_pod
     destination_pod = args.destination_pod
-    DBNAME = args.dbname
-    alert_summary = "Snowflake Refresh {} to {}".format(source_pod, destination_pod)
+    dbname          = args.dbname
+    alert_summary   = "Snowflake Refresh from pod {} to pod {}".format(source_pod, destination_pod)
     # configure logging
     logfile = '/g/dba/logs/dbrefresh/snowflakerefresh_{}_{}_{}.log'.format(source_pod, destination_pod,
                                                                            datetime.now().strftime(
                                                                                "%d-%b-%Y-%H-%M-%S"))
     setup_logging(logfile)
 
-    ## Create object for dbrefreshutil
+    # Create object for dbrefreshutil
     dbrefreshutil = DBRefreshUtil(logger=None)
     try:
-        ## Get account details and host information
+        # Get account details and host information
+        logger.info("Getting source , destination account details")
         cur_sql_dest, conn_sql_dest = pod_automation_util.sql_connect()
         rows = cur_sql_dest.execute("select upper(FriendlyName) as accountnumber "
                                     "from dbainfra.dbo.database_server_inventory "
                                     "where ServerType='snowflake' and pod = '{}'".format(source_pod))
-        row = rows.fetchone()
-        source_host = row[0]
+        row            = rows.fetchone()
+        source_host    = row[0]
         source_account = str(source_host).split('.')[0]
-        rows = cur_sql_dest.execute("select upper(FriendlyName) as accountnumber,lower(Env) as env "
-                                    "from dbainfra.dbo.database_server_inventory "
-                                    "where ServerType='snowflake' and pod = '{}'".format(destination_pod))
-        row = rows.fetchone()
+        rows           = cur_sql_dest.execute("select upper(FriendlyName) as accountnumber,lower(Env) as env "
+                                              "from dbainfra.dbo.database_server_inventory "
+                                              "where ServerType='snowflake' and pod = '{}'".format(destination_pod))
+        row                 = rows.fetchone()
         destination_host    = row[0]
         destination_env     = row[1]
         destination_account = str(destination_host).split('.')[0]
@@ -111,13 +111,14 @@ def main():
         Before performing the actual refresh, verify the destination pod not belongs to prod, if it belongs to prod
         exit from the code and update the request.
         """
+        logger.info("Checking destination pod is not belongs to prod")
         if destination_env == 'prod':
             logging.error("Destination pod {} is prod, refresh is not possible".format(destination_pod))
             status_message = "Refresh environment\n      Source: {}\n      Destination: {}\nStatus: " \
                              "Destination pod should not be production. \n" \
                              "Please check the attached log file for more details".format(source_pod, destination_pod)
             dbrefreshutil.update_current_running_refresh_status_on_desflow\
-                (status_message=status_message,files_to_attach=[logfile])
+                (status_message=status_message, files_to_attach=[logfile])
             update_current_running_status(source_pod, destination_pod, statuscode=11,
                                           comments='Destination pod should not be production')
             exit(1)
@@ -126,6 +127,8 @@ def main():
         Verify the refresh is scheduled for the instance, if the refresh is not scheduled for the pod, code will exit
         with return code 1
         """
+        logger.info("Checking refresh is scheduled for this pods source : {}, "
+                    "destination : {}".format(source_pod, destination_pod))
         retcode = pod_automation_util.check_refresh_possibility(destination_pod)
         if retcode == 1:
             logging.error("Refresh is not scheduled for this pod {}".format(destination_pod))
@@ -148,11 +151,11 @@ def main():
             ('/secret/v2/snowflake/{}/db/sa'.format(destination_pod))
 
         update_current_running_status(source_pod, destination_pod, statuscode=2,
-                                      comments="Refresh is possible.Enabling replication beteen source pod {} "
+                                      comments="Refresh is possible.Enabling replication between source pod {} "
                                                "and destination pod {}".format(source_pod,destination_pod))
         logger.info("Enabling replication from source pod {} to destination pod {}".format(source_pod,destination_pod))
         status_message = "Refresh environment\n      Source: {}\n      Destination: {}\nStatus: Refresh is possible." \
-                         "Enabling replication beteen source pod {} and destination pod {} \n" \
+                         "Enabling replication between source pod {} and destination pod {} \n" \
                          "Please check the attached log file for further " \
                          "details".format(source_pod,destination_pod,source_pod,destination_pod)
         dbrefreshutil.update_current_running_refresh_status_on_desflow(status_message=status_message,
@@ -161,16 +164,16 @@ def main():
         command = "export SNOWSQL_PWD={};/g/dba/snowflake/bin/snowsql -a {} -d {} -u sa -w dba_wh " \
                   "-f /g/dba/snowflake/snowflake_refresh/1_check_enable_refresh.sql -o quiet=true " \
                   "-o friendly=false -o header=false -s public -D DBNAME='{}' -D ACCOUNTNAME='{}' " \
-                  "-o exit_on_error=true".format(source_account_pwd,source_host,DBNAME,DBNAME,destination_account)
-        pipes = subprocess.Popen(command,stdout=subprocess.PIPE,stderr=subprocess.PIPE, shell=True)
+                  "-o exit_on_error=true".format(source_account_pwd, source_host, dbname, dbname, destination_account)
+        pipes = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=True)
         output, err = pipes.communicate()
         if pipes.returncode != 0 or output.strip() != 'SUCCESS':
             logger.error("Failed to enable the replication from source pod {} to "
-                         "destination pod {}".format(source_pod,destination_pod))
+                         "destination pod {} with error {}".format(source_pod,destination_pod, str(err)))
             logger.error("Output : {} , Error : {}".format(str(output),str(err)))
-            ## update the status of the failure on desflow and raise radar alert
+            # update the status of the failure on desflow and raise radar alert
             status_message = "Refresh environment\n      Source: {}\n   Destination: {}\nStatus: Refresh is possible." \
-                             "Failed to enable replication beteen source pod {} and destination pod {} \n" \
+                             "Failed to enable replication bewteen source pod {} and destination pod {} \n" \
                              "Please check the attached log file for further " \
                              "details".format(source_pod,destination_pod,source_pod,destination_pod)
             dbrefreshutil.update_current_running_refresh_status_on_desflow(status_message=status_message,
@@ -191,7 +194,7 @@ def main():
         """
         update_current_running_status(source_pod, destination_pod, statuscode=3,
                                       comments='Replicating database {} from source pod {} to '
-                                               'destination pod {}'.format(DBNAME, source_pod, destination_pod))
+                                               'destination pod {}'.format(dbname, source_pod, destination_pod))
         status_message = "Refresh environment\n      Source: {}\n      Destination: {}\n" \
                          "Status: Replication Enabled and Replicating the database" \
                          " from source pod to destination pod. \n" \
@@ -199,17 +202,17 @@ def main():
         dbrefreshutil.update_current_running_refresh_status_on_desflow(status_message=status_message,
                                                                        files_to_attach=[logfile])
         logger.info("replicate database {} from source account {} to "
-                    "destination account {}".format(DBNAME,source_account, destination_account))
+                    "destination account {}".format(dbname,source_account, destination_account))
         logger.info("Database replication takes time based on database size")
         command = "export SNOWSQL_PWD={};/g/dba/snowflake/bin/snowsql -a {} -d {} -u sa -w dba_wh " \
                   "-f /g/dba/snowflake/snowflake_refresh/2_replicate_database_from_source.sql -o quiet=true " \
                   "-o friendly=false -o header=false -s public -D DBNAME='{}' -D ACCOUNTNAME='{}' " \
-                  "-o exit_on_error=true".format(destination_account_pwd,destination_host,DBNAME,DBNAME,source_account)
+                  "-o exit_on_error=true".format(destination_account_pwd,destination_host,dbname,dbname,source_account)
         pipes = subprocess.Popen(command,stdout=subprocess.PIPE,stderr=subprocess.PIPE, shell=True)
         output, err = pipes.communicate()
         if pipes.returncode != 0 or output.strip() != 'SUCCESS':
             logger.error("Failed to replicate database {} from source account {} to "
-                         "destination account {}".format(DBNAME,source_host,destination_host))
+                         "destination account {}".format(dbname,source_host,destination_host))
             logger.error("Error : {}".format(str(err)))
 
             status_message = "Refresh environment\n      Source: {}\n  Destination: {}\nStatus: Replicating Database." \
@@ -224,7 +227,7 @@ def main():
                                         alert_summary,alert_description)
             exit(1)
         logger.info("Successfully replicated database {} from source account {} to "
-                    "destination account {}".format(DBNAME,source_account,destination_account))
+                    "destination account {}".format(dbname,source_account,destination_account))
 
         """
         Snowflake replication do not handle stages, tasks, pipes, file formats and permissions. 
@@ -240,7 +243,7 @@ def main():
                          "Please check the attached log file for further details".format(source_pod,destination_pod)
         dbrefreshutil.update_current_running_refresh_status_on_desflow(status_message=status_message,
                                                                        files_to_attach=[logfile])
-        olddbname = str(DBNAME) + "_OLD"
+        olddbname = str(dbname) + "_OLD"
         command = "export SNOWSQL_PWD={};/g/dba/snowflake/bin/snowsql -a {} -d {} -u sa -w dba_wh " \
                   "-f /g/dba/snowflake/snowflake_refresh/3_backup_stages_pipes_tasks.sql -o quiet=true " \
                   "-o friendly=false -o header=false -s public -D DBNAME='{}' " \
@@ -347,7 +350,7 @@ def main():
                                                                        files_to_attach=[logfile])
         command = "export SNOWSQL_PWD={};tail -n+2 {} | /g/dba/snowflake/bin/snowsql -a {} -d {} -u sa -w dba_wh " \
                   "-o quiet=true -o friendly=false -o header=false -s public " \
-                  "-o exit_on_error=true".format(destination_account_pwd,statementsfile,destination_host,DBNAME)
+                  "-o exit_on_error=true".format(destination_account_pwd,statementsfile,destination_host,dbname)
         pipes = subprocess.Popen(command,stdout=subprocess.PIPE,stderr=subprocess.PIPE, shell=True)
         output, err = pipes.communicate()
         if pipes.returncode != 0:
@@ -375,7 +378,7 @@ def main():
         command = "export SNOWSQL_PWD={};/g/dba/snowflake/bin/snowsql -a {} -d {} -u sa -w dba_wh " \
                   "-f /g/dba/snowflake/snowflake_refresh/6_cleanup.sql -o quiet=true -o friendly=false " \
                   "-o header=false -s public " \
-                  "-o exit_on_error=true".format(destination_account_pwd,destination_host,DBNAME)
+                  "-o exit_on_error=true".format(destination_account_pwd,destination_host,dbname)
         pipes = subprocess.Popen(command,stdout=subprocess.PIPE,stderr=subprocess.PIPE, shell=True)
         output, err = pipes.communicate()
         if pipes.returncode != 0:
