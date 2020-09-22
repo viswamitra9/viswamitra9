@@ -17,6 +17,7 @@ import json
 import sys
 import pyodbc
 import time
+import datetime
 
 from tabulate import tabulate
 
@@ -25,6 +26,7 @@ import arcesium.snowflake.vaultutil as vaultutil
 # packages for radar alert
 from arcesium.radar.client import SendAlertRequest
 from arcesium.radar.client import RadarService
+
 
 logger = logging.getLogger()
 
@@ -47,7 +49,12 @@ ALLOWED_HOSTS    = "'125.18.12.160/28', '115.112.81.240/28','10.12.0.0/17','149.
 RESTRICTED_HOSTS = "'54.172.224.181','54.174.16.130'"
 # warehouse usage alerting
 DEFAULT_WAREHOUSE_CREDIT_LIMIT = 100
-
+"""
+cost for business critical edition , refer to https://www.snowflake.com/pricing/ for more details. We are using business
+critical edition so for warehouses $4/credit, for storage $40/TB on demand storage.
+"""
+WAREHOUSE_COST = 4
+STORAGE_COST   = 40
 
 def setup_logging(logfile):
     """
@@ -1183,6 +1190,70 @@ def snowflake_account_monitoring(account, pod):
 def snowflake_cost_utilization_report():
     """
     PURPOSE:
-       This function is to monitor the Snowflake cost utilization and send a report of cost every 6 months for all pods.
+       This function get the last 6 months of resource utilization and send a report of that.
     Returns:
     """
+    report = '/g/dba/logs/snowflake/cost_report.html'
+    fh = open(report, 'w')
+    # get the last 6 months as header row
+    th = ''
+    now = datetime.datetime.now()
+    for _ in range(0, 6):
+        now = now.replace(day=1) - datetime.timedelta(days=1)
+        th += "<th> {}_{} </th>".format(now.month, now.year)
+    mail_body = """
+    Hi Team,
+    <br><br><br>
+    Attached the Snowflake cost for utilization in all accounts for last 6 months.
+    <br><br><br>
+    Thanks
+    <br>
+    DBA Team
+    """
+    file_content = """"<html>
+    <head>
+    {}
+    </head>
+    <body>
+    <table>
+    <tr>
+        <th>ACCOUNT</th>
+        <th>POD</th>
+        {}
+    </tr>
+    """.format('<style> table { font-family: arial, sans-serif; border-collapse: collapse; width: 70%; } td, th { border: 1px solid #dddddd; text-align: left; padding: 8px; } tr:nth-child(even) { background-color: #dddddd;} </style>', th)
+    cur_sql_dest, conn_sql_dest = sql_connect()
+    cur_sql_dest.execute("select lower(FriendlyName), lower(pod) from dbainfra.dbo.database_server_inventory "
+                         "where lower(ServerType)='snowflake' and IsActive=1")
+    for sql_result in cur_sql_dest.fetchall():
+        connection, cursor = get_admin_connection(account=sql_result[0], pod=sql_result[1])
+        cursor.execute("WITH WAREHOUSE AS (select date_trunc('MONTH',end_time) month,ROUND(sum(credits_used),2)*4 cost"
+                       "  from snowflake.account_usage.WAREHOUSE_METERING_HISTORY where end_time between"
+                       " date_trunc('MONTH', dateadd(month,-6,current_timestamp)) and"
+                       " date_trunc('MONTH', current_timestamp) group by 1), STORAGE AS"
+                       " (select date_trunc('MONTH',USAGE_DATE) month,"
+                       "round(avg(storage_bytes + stage_bytes + failsafe_bytes)/1024/1024/1024/1024,2)*40 as cost "
+                       "from snowflake.account_usage.storage_usage where USAGE_DATE between "
+                       "date_trunc('MONTH', dateadd(month,-6,current_timestamp)) and date_trunc('MONTH', current_timestamp)"
+                       " group by 1) select MONTH(WAREHOUSE.month)||'_'||YEAR(WAREHOUSE.month) AS MONTH,"
+                       "coalesce((WAREHOUSE.cost + STORAGE.cost),0) as cost from WAREHOUSE join STORAGE on "
+                       "(WAREHOUSE.month=STORAGE.month) ORDER BY MONTH desc")
+        result = cursor.fetchall()
+        file_content += "<tr> <td> {} </td> ".format(sql_result[0])
+        file_content += " <td> {} </td> ".format(sql_result[1])
+        for i in result:
+            file_content += " <td> {} </td> ".format(i[1])
+        for i in range((6 - len(result))):
+            file_content += " <td> 0.00 </td> "
+        file_content += "</tr>"
+        connection.close()
+    file_content += """
+     </table>
+     </body>
+     </html>"""
+    fh.write(file_content)
+    fh.close()
+    sub = "COST Report of Snowflake accounts for last 6 months"
+    send_mail(send_from="dba-ops@arcesium.com", send_to=["oguri@arcesium.com"], subject=sub,
+              text=mail_body,files=[report])
+    conn_sql_dest.close()
