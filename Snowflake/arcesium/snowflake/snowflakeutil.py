@@ -31,7 +31,7 @@ from arcesium.radar.client import RadarService
 logger = logging.getLogger()
 
 # type of users allowed to create
-USER_TYPE   = ['app', 'third_party_app', 'customer', 'trm', 'temporary', 'app_team']
+USER_TYPE   = ['app', 'third_party_app', 'customer', 'trm', 'temporary', 'app_team', 'dba']
 # vault paths for app and other users
 APP_VAULT   = "/secret/v2/$APPNAME/$POD/db/snowflake/$DBNAME/$USERNAME"
 OTHER_VAULT = "/secret/v2/snowflake/$POD/db/$USERNAME"
@@ -55,6 +55,7 @@ critical edition so for warehouses $4/credit, for storage $40/TB on demand stora
 """
 WAREHOUSE_COST = 4
 STORAGE_COST   = 40
+
 
 def setup_logging(logfile):
     """
@@ -217,7 +218,7 @@ def create_database(account, dbname, pod):
         cursor.execute("grant usage on integration s3_{}_integration to role {}_owner".format(pod,dbname))
         cursor.execute("grant usage on integration s3_{}_integration to role {}_reader".format(pod,dbname))
         cursor.execute("grant usage on integration s3_{}_integration to role trm_role".format(pod))
-        logger.info("permissions granted to newly created db roles")
+        logger.info("permissions on storage integration is granted to newly created db roles")
         # database related roles are created, granting permissions to owner role
         cursor.execute("grant all on database {} to role {}_owner".format(dbname, dbname))
         cursor.execute("grant all on all schemas in database {} to role {}_owner".format(dbname, dbname))
@@ -324,33 +325,70 @@ def get_unique_password():
     return password
 
 
-def create_user(account, username, pod, user_type, user_mail, dbname='arcesium_data_warehouse', **kwargs):
+def create_user(account, username, pod, user_type, user_mail, logfile, dbname='arcesium_data_warehouse', **kwargs):
     """
     PURPOSE:
         create snowflake user, users are different type in Snowflake, refer to
         http://wiki.ia55.net/pages/viewpage.action?spaceKey=TECHDOCS&title=Snowflake+user+management
         This function will create a role for every user with "username_role", grant the permissions to the role
         and assign the role as default role and write password to vault. Make an entry into the DBMONITOR server.
+        If the user is aready exists , it simply return with an error
     INPUTS:
         account (format is account.<region>.privatelink), username, pod
     Returns:
         returns user password
     """
-    # create SQL connection
+    # create SQL and Snowflake connections
     sql_cur, sql_conn = sql_connect()
+    connection, cursor = get_admin_connection(account, pod)
+    # check the user_type is in given list
     assert user_type in USER_TYPE, "usertype should be anyone of {}".format(USER_TYPE)
     # role for every user with unique password
     user_role = "{}_role".format(username)
     db_reader = "{}_reader".format(dbname)
     db_owner  = "{}_owner".format(dbname)
-    password  = get_unique_password()
-    connection, cursor = get_admin_connection(account, pod)
+    user_type = str(user_type).lower()
+    # check the existence of user
+    cursor.execute("SHOW USERS")
+    cursor.execute("SELECT \"login_name\"  FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))"
+                   " where lower(\"login_name\")='{}".format(str(username).lower()))
+    result = cursor.fetchall()
+    if result is not None:
+        logger.error("user {} already exists in pod {}".format(username, pod))
+        return
+    # create user if not exists
+    password = get_unique_password()
     cursor.execute("create role if not exists {}".format(user_role))
     cursor.execute("create user if not exists {} password='{}' DEFAULT_ROLE={} "
                    "EMAIL='{}'".format(username, password, user_role, user_mail))
     cursor.execute("grant role {} to user {}".format(user_role, username))
+    # write password to vault and make entry into SQL server
+    if user_type == 'app':
+        vaultpath = APP_VAULT.replace("$POD", pod).replace("$APPNAME", kwargs['appname']) \
+            .replace("$DBNAME", dbname).replace("$USERNAME", username)
+        cname = "{}.snowflakecomputing.com".format(account)
+        secret = json.dumps({'cname': cname, 'account': account, 'password': password, 'database': dbname})
+        vaultutil.write_secret_to_vault(vaultpath, secret)
+        sql_cur.execute("insert into dbainfra.dbo.snowflake_users "
+                    "(username, usertype, appname, user_mail, vaultpath, pod) values ('{}', '{}', '{}', "
+                    "'{}', '{}', '{}')".format(username, user_type, kwargs['appname'], user_mail, vaultpath,pod))
+    else:
+        vaultpath = OTHER_VAULT.replace("$POD", pod).replace("$USERNAME", username)
+        cname = "{}.snowflakecomputing.com".format(account)
+        secret = json.dumps({'cname': cname, 'account': account, 'password': password, 'database': dbname})
+        vaultutil.write_secret_to_vault(vaultpath, secret)
+        if user_type == 'temporary':
+            sql_cur.execute(
+                "insert into dbainfra.dbo.snowflake_users (username, usertype, user_retention, user_mail, "
+                "vaultpath, pod) values "
+                "('{}','{}',{},'{}','{}','{}')".format(username, user_type, kwargs['retention'], user_mail,
+                                                       vaultpath, pod))
+        else:
+            sql_cur.execute(
+                "insert into dbainfra.dbo.snowflake_users (username, usertype, user_mail, vaultpath, pod) "
+                "values ('{}','{}','{}','{}','{}')".format(username, user_type, user_mail, vaultpath, pod))
+    sql_cur.commit()
     # grant required roles to the user role
-    user_type = str(user_type).lower()
     # based on the user type grant the required permissions to the users
     if user_type == 'app':
         if 'appname' not in kwargs:
@@ -374,6 +412,8 @@ def create_user(account, username, pod, user_type, user_mail, dbname='arcesium_d
     # create trm user
     if user_type == 'trm':
         cursor.execute("grant role trm_role to role {}".format(user_role))
+    if user_type == 'dba':
+        cursor.execute("grant role accountadmin to role {}".format(user_role))
     # create temporary user
     if user_type == 'temporary':
         if 'retention' not in kwargs:
@@ -391,37 +431,15 @@ def create_user(account, username, pod, user_type, user_mail, dbname='arcesium_d
         if env not in ['dev', 'qa']:
             cursor.execute("drop role {}".format(user_role))
             cursor.execute("drop user {}".format(username))
-            raise Exception("application team(human) users are not created in prod or uat environment")
+            raise Exception("application team(human) users are not created in prod or uat environment, "
+                            "create temporary users")
         cursor.execute("grant role {} to role {}".format(db_owner, user_role))
         cursor.execute("grant role warehouse_owner to role {}".format(user_role))
-    # write password to vault and make entry into SQL server
-    if user_type == 'app':
-        vaultpath   = APP_VAULT.replace("$POD", pod).replace("$APPNAME", kwargs['appname'])\
-            .replace("$DBNAME", dbname).replace("$USERNAME", username)
-        cname       = "{}.snowflakecomputing.com".format(account)
-        secret      = json.dumps({'cname': cname, 'account': account, 'password': password, 'database': dbname})
-        vaultutil.write_secret_to_vault(vaultpath, secret)
-        sql_cur.execute("insert into dbainfra.dbo.snowflake_users "
-                        "(username, usertype, appname, user_mail, vaultpath, pod) values ('{}', '{}', '{}', "
-                        "'{}', '{}', '{}')".format(username, user_type, kwargs['appname'], user_mail, vaultpath, pod))
-    else:
-        vaultpath = OTHER_VAULT.replace("$POD", pod).replace("$USERNAME", username)
-        cname     = "{}.snowflakecomputing.com".format(account)
-        secret    = json.dumps({'cname': cname, 'account': account, 'password': password, 'database': dbname})
-        vaultutil.write_secret_to_vault(vaultpath, secret)
-        if user_type == 'temporary':
-            sql_cur.execute("insert into dbainfra.dbo.snowflake_users (username, usertype, user_retention, user_mail, "
-            "vaultpath, pod) values "
-            "('{}','{}',{},'{}','{}','{}')".format(username, user_type, kwargs['retention'], user_mail, vaultpath, pod))
-        else:
-            sql_cur.execute("insert into dbainfra.dbo.snowflake_users (username, usertype, user_mail, vaultpath, pod) "
-            "values ('{}','{}','{}','{}','{}')".format(username, user_type, user_mail, vaultpath, pod))
     # release the resources
-    sql_cur.commit()
-    sql_conn.close()
     connection.close()
     verify_user_permissions(account, username, pod)
-    return password
+    send_user_creation_email_to_user(account, pod, user_mail, password, user_type, username, logfile)
+    logger.info("Successfully sent email to the user about user creation")
 
 
 def reset_user_password(account, username, pod):
@@ -534,7 +552,8 @@ def prepare_account(account, region, env, pod):
         admin_pass = vaultutil.get_user_password('/secret/v2/snowflake/{}/db/admin'.format(pod))
         password   = json.loads(admin_pass)['password']
         logger.info("Creating super user connection")
-        connection, cursor = get_snowflake_connection(account='{}.{}.privatelink'.format(account, region), username='admin', password=password)
+        connection, cursor = get_snowflake_connection(account='{}.{}.privatelink'.format(account, region),
+                                                      username='admin', password=password)
         logger.info("Created super user connection")
         logger.info("Dropping unwanted users and default warehouse")
         cursor.execute("use role accountadmin")
@@ -545,6 +564,7 @@ def prepare_account(account, region, env, pod):
         cursor.execute("drop warehouse if exists DEMO_WH")
         cursor.execute("create warehouse if not exists DBA_WH")
         logger.info("Dropped users : MNDINI_SFC and APATEL_SFC")
+        logger.info("Dropped warehouses : COMPUTE_WH,LOAD_WH and DEMO_WH")
         # create role for trm , this role will be given to users until pod is onboarded
         cursor.execute("create role if not exists trm_role")
         # create default account roles
@@ -555,7 +575,7 @@ def prepare_account(account, region, env, pod):
         cursor.execute("create role if not exists share_owner")
         cursor.execute("grant CREATE SHARE on account to role share_owner")
         # grant the roles to accountadmin
-        cursor.execute("grant role warehouse_owner, monitoring_owner, share_owner to role accountadmin")
+        cursor.execute("grant role warehouse_owner, monitoring_owner, share_owner, trm_role to role accountadmin")
         # grant the roles to trm_role
         cursor.execute("grant role warehouse_owner, monitoring_owner, share_owner to role trm_role")
         # creating required databases
@@ -581,26 +601,39 @@ def prepare_account(account, region, env, pod):
         # if the environment is prod set the time travel period to 35 days for other environments it is default to 1
         if str(env).lower() == 'prod':
             cursor.execute("alter account set DATA_RETENTION_TIME_IN_DAYS = 35")
-        # make entry into database inventory
+        # make entry into database inventory if the entry not exists
         logger.info("Making entry into database inventory")
         cur_sql_dest, conn_sql_dest = sql_connect()
-        query = "insert into dbainfra.dbo.database_server_inventory " \
+        query = "select * from dbainfra.dbo.database_server_inventory" \
+                " where FriendlyName='{}'".format("{}.{}.privatelink".format(account, region))
+        cur_sql_dest.execute(query)
+        result = cur_sql_dest.fetchall()
+        if result is None:
+            query = "insert into dbainfra.dbo.database_server_inventory " \
                 "(Tier,Dataserver,Env,Host,IsActive,Monitor,ServerType,FriendlyName,Pod,ClientDbState) " \
                 "values('{}','{}','{}','{}','{}','{}','{}','{}','{}','{}')".\
                 format('Tier 1:<<BR>>Arcesium',cname,env,cname,1,'yes','snowflake',
                 "{}.{}.privatelink".format(account, region),pod,'onboarding')
+            cur_sql_dest.execute(query)
+        query = "select * from dbainfra.dbo.snowflake_users where username='sa' and pod = '{}'".format(pod)
         cur_sql_dest.execute(query)
+        result = cur_sql_dest.fetchall()
+        if result is None:
+            query = "insert into dbainfra.dbo.snowflake_users values('sa','{}','admin',null,null," \
+                "'dba-ops-team@arcesium.com','/secret/v2/snowflake/{}/db/sa')".format(pod, pod)
+            cur_sql_dest.execute(query)
         # apply the network policy
         logger.info("Creating network policy block_public and applying to account")
         cursor.execute("CREATE OR REPLACE NETWORK POLICY block_public ALLOWED_IP_LIST=({}) "
                        "BLOCKED_IP_LIST=({})".format(ALLOWED_HOSTS, RESTRICTED_HOSTS))
         cursor.execute("alter account set network_policy = block_public")
-        # release the resources
-        conn_sql_dest.close()
-        connection.close()
     except Exception as e:
         logger.exception("Failed to prepare the account {} with error {}".format(str(account), str(e)))
         raise Exception("Failed to prepare the account {} with error {}".format(str(account), str(e)))
+    else:
+        # release the resources
+        conn_sql_dest.close()
+        connection.close()
 
 
 def verify_user_permissions(account, username, pod):
@@ -617,11 +650,10 @@ def verify_user_permissions(account, username, pod):
         vaultpath: APP_VAULT_PATH
     Returns:
     """
-    operations = []
-    operations.append(['Operation', 'Status'])
+    operations = [['Operation', 'Status']]
     cur_sql, conn_sql = sql_connect()
-    cur_sql.execute("select usertype,vaultpath "
-             "from dbainfra.dbo.snowflake_users where username='{}' and pod = '{}'".format(username, pod))
+    cur_sql.execute("select usertype,vaultpath from dbainfra.dbo.snowflake_users "
+                    "where username='{}' and pod = '{}'".format(username, pod))
     result = cur_sql.fetchall()
     if not result:
         raise Exception("No entry for this user in dbainfra.dbo.snowflake_users table")
@@ -679,7 +711,6 @@ def verify_user_permissions(account, username, pod):
         except Exception as e:
             operations.append(["create_warehouse", "failed"])
             logger.exception(str(e))
-        operations.append(operations)
     if user_type in ['third_party_app', 'temporary', 'customer']:
         admin_cursor.execute("create schema user_permission_test")
         admin_cursor.execute("create table user_permission_test.test_permission as select current_timestamp as time")
@@ -707,7 +738,7 @@ def verify_user_permissions(account, username, pod):
     # raise exception if any failure
     for i in operations:
         if i[1] == 'failed':
-            raise Exception("user created without required permissions")
+            raise Exception("user got created without required permissions")
 
 
 def drop_database(account, database, pod):
@@ -735,7 +766,7 @@ def drop_database(account, database, pod):
         raise Exception("Failed to drop database {} in account {}".format(database, account))
 
 
-def send_mail(send_from, send_to, subject, text, files=[], server="relay.ia55.net"):
+def send_mail(send_from, send_to, subject, text, files=None, server="relay.ia55.net"):
     """
     Function to send email with given details. We use SMTP library for sending email
 
@@ -754,13 +785,15 @@ def send_mail(send_from, send_to, subject, text, files=[], server="relay.ia55.ne
     Raises:
             Any exception while sending email
     """
+    if files is None:
+        files = []
     assert type(send_to) == list
     assert type(files) == list
 
-    message = MIMEMultipart()
-    message['From'] = send_from
-    message['To'] = COMMASPACE.join(send_to)
-    message['Date'] = formatdate(localtime=True)
+    message            = MIMEMultipart()
+    message['From']    = send_from
+    message['To']      = COMMASPACE.join(send_to)
+    message['Date']    = formatdate(localtime=True)
     message['Subject'] = subject
 
     message.attach(MIMEText(text,'html'))
@@ -908,19 +941,19 @@ def rotate_passwords(account, pod):
         As a part of standard process we need to rotate the password for all users in an account for every 180 days.
         This will reset the password for all users in given pod and account and send email for all human users.
     Args:
-        account: ex: arc1000
+        account: ex: arc1000.us-east-1.privatelink
         pod : ex: terra
     Returns:
     """
     """
-    Get list of users from snowflake whose password was set before 179 days, reset the user password and write to vault.
+    Get list of users from snowflake account and reset the user password and write to vault.
     Based on the type of user send email with new password to the user.
     """
     try:
         connection, cursor = get_admin_connection(account=account, pod=pod)
         cursor.execute("select lower(NAME) from snowflake.account_usage.users "
                        "where MUST_CHANGE_PASSWORD=false and HAS_PASSWORD=true and DELETED_ON is null "
-                       "and DISABLED=false and snowflake_lock=false")
+                       "and DISABLED=false and snowflake_lock=false and lower(NAME)!='snowflake'")
         snowflake_result = cursor.fetchall()
         for i in snowflake_result:
             username   = i[0]
@@ -930,8 +963,7 @@ def rotate_passwords(account, pod):
     except Exception as e:
         logger.error("Error while resetting password for user {} in pod {}".format(username, pod))
         raise Exception("Error while resetting password for user {} in pod {}".format(username, pod))
-    finally:
-        connection.close()
+    connection.close()
 
 
 def extend_user_retention(account, pod,  username, retention):
@@ -1196,8 +1228,8 @@ def snowflake_cost_utilization_report():
     report = '/g/dba/logs/snowflake/cost_report.html'
     fh = open(report, 'w')
     # get the last 6 months as header row
-    th = ''
     now = datetime.datetime.now()
+    th = ''
     for _ in range(0, 6):
         now = now.replace(day=1) - datetime.timedelta(days=1)
         th += "<th> {}_{} </th>".format(now.month, now.year)

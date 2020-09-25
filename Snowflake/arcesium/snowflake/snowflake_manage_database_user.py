@@ -36,7 +36,7 @@ def parse_arguments():
                                   OR
     sudo -u sqlexec python snowflake_manage_database_user.py --grant_additional_permissions --permission_type monitoring_owner --username temp_oguri --pod terra
                                   OR
-    sudo -u sqlexec python snowflake_manage_database_user.py --prepare_account --account arc1500 --pod baamuat --region us-east-1 --env uat
+    sudo -u sqlexec python snowflake_manage_database_user.py --prepare_account --account arc1500 --pod baamuat --region us-east-1 --account_env uat
     '''))
     # Parse the input task to be performed
     task = parser.add_mutually_exclusive_group(required=True)
@@ -176,6 +176,13 @@ def main():
         print("example : sudo -u sqlexec python snowflake_manage_database_user.py --prepare_account --account arc1500 --pod baamuat --region us-east-1 --account_env uat")
         sys.exit(1)
 
+
+    # account management operations
+    if cmd == 'prepare_account':
+        logger.info("Preparing new snowflake account {}".format(account))
+        snowflakeutil.prepare_account(account,region,account_env,pod)
+        exit(0)
+
     instances = {}
     cur_sql_dest, conn_sql_dest = snowflakeutil.sql_connect()
     if args.pod:
@@ -206,15 +213,15 @@ def main():
         if cmd == 'create_user':
             logger.info("Creating user: {} on instance {}".format(username, account))
             if user_type == 'temporary':
-                password = snowflakeutil.create_user(account=account, username=username, pod=pod, user_type=user_type,
-                                                     user_mail=user_mail, dbname=dbname, retention=retention)
+                snowflakeutil.create_user(account=account, username=username, pod=pod, user_type=user_type,
+                                            user_mail=user_mail, dbname=dbname, retention=retention, logfile=logfile)
             if user_type == 'app':
-                password = snowflakeutil.create_user(account=account, username=username, pod=pod, user_type=user_type,
-                                          user_mail=user_mail, dbname=dbname, appname=appname)
+                snowflakeutil.create_user(account=account, username=username, pod=pod, user_type=user_type,
+                                          user_mail=user_mail, dbname=dbname, appname=appname, logfile=logfile)
             if user_type in ['third_party_app','customer','trm','app_team']:
-                password = snowflakeutil.create_user(account=account, username=username, pod=pod, user_type=user_type,
-                                                     user_mail=user_mail, dbname=dbname)
-            snowflakeutil.send_user_creation_email_to_user(account, pod, user_mail, password, user_type, username, logfile)
+                snowflakeutil.create_user(account=account, username=username, pod=pod, user_type=user_type,
+                                                     user_mail=user_mail, dbname=dbname, logfile=logfile)
+
         if cmd == 'drop_user':
             logger.info("Deleting user: {} in account {}".format(username, account))
             snowflakeutil.drop_user(account,username,pod)
@@ -238,10 +245,6 @@ def main():
             else:
                 snowflakeutil.grant_additional_permissions(account=account, pod=pod, username=username,
                                                            permission_type=permission_type)
-    # account management operations
-    if cmd == 'prepare_account':
-        logger.info("Preparing new snowflake account {}".format(account))
-        snowflakeutil.prepare_account(account,region,account_env,pod)
 
 
 if __name__ == "__main__":
