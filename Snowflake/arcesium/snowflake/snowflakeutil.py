@@ -350,8 +350,7 @@ def create_user(account, username, pod, user_type, user_mail, logfile, dbname='a
     user_type = str(user_type).lower()
     # check the existence of user
     cursor.execute("SHOW USERS")
-    cursor.execute("SELECT \"login_name\"  FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))"
-                   " where lower(\"login_name\")='{}".format(str(username).lower()))
+    cursor.execute("SELECT \"login_name\"  FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) where lower(\"login_name\")='{}'".format(str(username).lower()))
     result = cursor.fetchall()
     if result is not None:
         logger.error("user {} already exists in pod {}".format(username, pod))

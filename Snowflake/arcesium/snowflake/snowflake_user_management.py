@@ -123,7 +123,7 @@ def main():
         print(
             "example : sudo -u sqlexec python snowflake_manage_database_user.py --reset_user_password --pod baamuat --username cocoa_app")
         sys.exit(1)
-    if cmd == 'extend_retention_period' and args.username is None or args.retention is None:
+    if cmd == 'extend_retention_period' and (args.username is None or args.retention is None):
         print('Missing required fields to extend the retention for user')
         print('sudo -u sqlexec python snowflake_manage_database_user.py --extend_retention_period --pod baamuat --username temp_oguri --retention 90')
         sys.exit(1)
