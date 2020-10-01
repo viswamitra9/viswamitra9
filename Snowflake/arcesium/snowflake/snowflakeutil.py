@@ -1229,7 +1229,7 @@ def snowflake_account_monitoring(account, pod):
 def snowflake_cost_utilization_report():
     """
     PURPOSE:
-       This function get the last 6 months of resource utilization and send a report of that.
+       This function get the last 6 months of resource utilization along with warehouse and storage utilization.
     Returns:
     """
     report = '/g/dba/logs/snowflake/cost_report.html'
