@@ -15,17 +15,18 @@ import random
 import logging
 import json
 import sys
+sys.path.append('/g/dba/oguri/dba/snowflake')
 import pyodbc
 import time
 import datetime
 
 from tabulate import tabulate
 
-import arcesium.snowflake.vaultutil as vaultutil
+import vaultutil
 
 # packages for radar alert
-from arcesium.radar.client import SendAlertRequest
-from arcesium.radar.client import RadarService
+#from arcesium.radar.client import SendAlertRequest
+#from arcesium.radar.client import RadarService
 
 
 logger = logging.getLogger()
@@ -352,7 +353,8 @@ def create_user(account, username, pod, user_type, user_mail, logfile, dbname='a
     cursor.execute("SHOW USERS")
     cursor.execute("SELECT \"login_name\"  FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) where lower(\"login_name\")='{}'".format(str(username).lower()))
     result = cursor.fetchall()
-    if result is not None:
+    print(result)
+    if len(result) > 0:
         logger.error("user {} already exists in pod {}".format(username, pod))
         return
     # create user if not exists
@@ -870,7 +872,7 @@ def send_passwrod_reset_email_to_user(account, pod, user_mail, password, user_ty
         <br>
         DBA Team 
         """.format(username, pod, account, username, password)
-    send_mail(send_from="dba-ops@arcesium.com", send_to=[user_mail, "dba-ops-team@arcesium.com"], subject=sub, text=mail_body)
+    send_mail(send_from="dba-ops@arcesium.com", send_to=[user_mail], subject=sub, text=mail_body)
 
 
 def send_user_creation_email_to_user(account, pod, user_mail, password, user_type, username, logfile):
@@ -930,7 +932,7 @@ def send_user_creation_email_to_user(account, pod, user_mail, password, user_typ
         <br>
         DBA Team 
         """.format(username, pod, account, username, password)
-    send_mail(send_from="dba-ops@arcesium.com", send_to=["dba-ops-team@arcesium.com", user_mail], subject=sub,
+    send_mail(send_from="dba-ops@arcesium.com", send_to=[user_mail], subject=sub,
               text=mail_body, files=[logfile])
 
 
@@ -1005,18 +1007,23 @@ def grant_additional_permissions(account, pod, username, permission_type, **kwar
         database         : ubor_data_warehouse
     Returns:
     """
-    permissions = ['warehouse_owner', 'monitoring_owner', 'database_owner', 'share_owner']
+    permissions = ['warehouse_owner', 'monitoring_owner', 'database_owner', 'database_reader','share_owner']
     assert permission_type in permissions , "permissions should be in  {}".format(permissions)
     # create database connection
     connection, cursor = get_admin_connection(account=account, pod=pod)
     user_role = "{}_role".format(username)
-    if permission_type == 'database_owner':
+    if permission_type in ['database_owner', 'database_reader']:
         if 'dbname' not in kwargs:
             raise Exception("Missing database name to grant permissions")
         dbname = kwargs['dbname']
         db_owner  = "{}_owner".format(dbname)
-        cursor.execute("grant role {} to role {}".format(db_owner, user_role))
-    cursor.execute("grant role {} to role {}",format(permission_type, user_role))
+        db_reader = "{}_reader".format(dbname)
+        if permission_type == 'database_owner':
+            cursor.execute("grant role {} to role {}".format(db_owner, user_role))
+        if permission_type == 'database_reader':
+            cursor.execute("grant role {} to role {}".format(db_reader, user_role))
+    else:
+        cursor.execute("grant role {} to role {}".format(permission_type, user_role))
     connection.close()
 
 
@@ -1045,7 +1052,8 @@ def delete_expired_users(account, pod):
     Returns:
     """
     connection, cursor = get_admin_connection(account=account, pod=pod)
-    cursor.execute("select name from snowflake.account_usage.users where EXPIRES_AT < current_timestamp")
+    cursor.execute("show users")
+    cursor.execute("SELECT \"login_name\"  FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) where \"expires_at_time\" < current_timestamp")
     result = cursor.fetchall()
     for i in result:
         username = i[0]
@@ -1141,7 +1149,7 @@ def monitor_warehouse_utilization(account, pod):
             <br>
             DBA Team             
             """
-            send_mail(send_from="dba-ops@arcesium.com", send_to=[user_mail, "dba-ops-team@arcesium.com"], subject=sub,
+            send_mail(send_from="dba-ops@arcesium.com", send_to=[user_mail], subject=sub,
                       text=mail_body)
     # release the resources
     connection.close()

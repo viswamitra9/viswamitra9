@@ -1,6 +1,3 @@
-try:
-    print('test')
-except:
-    print('except')
-else:
-    print('close')
+a=2
+b=3
+print(a,b)
