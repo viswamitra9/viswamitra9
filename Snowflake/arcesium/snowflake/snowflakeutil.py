@@ -872,7 +872,7 @@ def send_passwrod_reset_email_to_user(account, pod, user_mail, password, user_ty
         <br>
         DBA Team 
         """.format(username, pod, account, username, password)
-    send_mail(send_from="dba-ops@arcesium.com", send_to=[user_mail], subject=sub, text=mail_body)
+    send_mail(send_from="dba-ops@arcesium.com", send_to=["dba-ops-team@arcesium.com",user_mail], subject=sub, text=mail_body)
 
 
 def send_user_creation_email_to_user(account, pod, user_mail, password, user_type, username, logfile):
@@ -932,7 +932,7 @@ def send_user_creation_email_to_user(account, pod, user_mail, password, user_typ
         <br>
         DBA Team 
         """.format(username, pod, account, username, password)
-    send_mail(send_from="dba-ops@arcesium.com", send_to=[user_mail], subject=sub,
+    send_mail(send_from="dba-ops@arcesium.com", send_to=["dba-ops-team@arcesium.com",user_mail], subject=sub,
               text=mail_body, files=[logfile])
 
 
@@ -999,6 +999,7 @@ def grant_additional_permissions(account, pod, username, permission_type, **kwar
         2. monitoring_owner : monitor account usage, login etc
         3. database_owner   : owner permissions to database (all users by default has at least read permissions)
         4. share_owner      : data sharing permission with clients
+        5. user type        : type of the user
     Args:
         account: arc1000.us-east-1.privatelink
         pod              : terra
@@ -1008,8 +1009,9 @@ def grant_additional_permissions(account, pod, username, permission_type, **kwar
     Returns:
     """
     permissions = ['warehouse_owner', 'monitoring_owner', 'database_owner', 'database_reader','share_owner']
-    assert permission_type in permissions , "permissions should be in  {}".format(permissions)
+    assert permission_type in permissions , "permission type should be in  {}".format(permissions)
     # create database connection
+    logger.info("Granting additional permissions {} to user {}".format(permission_type, username))
     connection, cursor = get_admin_connection(account=account, pod=pod)
     user_role = "{}_role".format(username)
     if permission_type in ['database_owner', 'database_reader']:
@@ -1019,7 +1021,28 @@ def grant_additional_permissions(account, pod, username, permission_type, **kwar
         db_owner  = "{}_owner".format(dbname)
         db_reader = "{}_reader".format(dbname)
         if permission_type == 'database_owner':
+            assert kwargs['user_type'] in USER_TYPE, "usertype should be anyone of {}".format(USER_TYPE)
             cursor.execute("grant role {} to role {}".format(db_owner, user_role))
+            if kwargs['user_type'] == 'app':
+                cur_sql_dest, conn_sql_dest = sql_connect()
+                cur_sql_dest.execute("select TOP 1 vaultpath,appname from dbainfra.dbo.snowflake_users "
+                                     "where username='{}' and pod = '{}' and usertype='app'".format(username,pod))
+                result = cur_sql_dest.fetchall()
+                if not result:
+                    raise Exception("No entry for this user in dbainfra.dbo.snowflake_users table")
+                for i in result:
+                    vaultpath = i[0]
+                    appname   = i[1]
+                password  = vaultutil.get_user_password(vaultpath=vaultpath)
+                password  = json.loads(password)['password']
+                dbname    = dbname
+                vaultpath = APP_VAULT.replace("$POD", pod).replace("$APPNAME", appname).replace("$DBNAME",
+                                                                            dbname).replace("$USERNAME", username)
+                cname = "{}.snowflakecomputing.com".format(account)
+                secret = json.dumps({'cname': cname, 'account': account, 'password': password, 'database': dbname})
+                logger.info("Writing credentials of user {} to vault path {}".format(username, vaultpath))
+                vaultutil.write_secret_to_vault(vaultpath, secret)
+                logger.info("Wrote credentials of user {} to vault path {} successfully".format(username, vaultpath))
         if permission_type == 'database_reader':
             cursor.execute("grant role {} to role {}".format(db_reader, user_role))
     else:
@@ -1149,7 +1172,7 @@ def monitor_warehouse_utilization(account, pod):
             <br>
             DBA Team             
             """
-            send_mail(send_from="dba-ops@arcesium.com", send_to=[user_mail], subject=sub,
+            send_mail(send_from="dba-ops@arcesium.com", send_to=["dba-ops-team@arcesium.com",user_mail], subject=sub,
                       text=mail_body)
     # release the resources
     connection.close()
@@ -1229,7 +1252,7 @@ def snowflake_account_monitoring(account, pod):
 def snowflake_cost_utilization_report():
     """
     PURPOSE:
-       This function get the last 6 months of resource utilization along with warehouse and storage utilization.
+       This function get the last 6 months of resource utilization and send a report of that.
     Returns:
     """
     report = '/g/dba/logs/snowflake/cost_report.html'
@@ -1293,6 +1316,6 @@ def snowflake_cost_utilization_report():
     fh.write(file_content)
     fh.close()
     sub = "COST Report of Snowflake accounts for last 6 months"
-    send_mail(send_from="dba-ops@arcesium.com", send_to=["oguri@arcesium.com"], subject=sub,
+    send_mail(send_from="dba-ops@arcesium.com", send_to=["dba-ops-team@arcesium.com"], subject=sub,
               text=mail_body,files=[report])
     conn_sql_dest.close()

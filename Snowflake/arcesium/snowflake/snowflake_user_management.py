@@ -5,7 +5,8 @@ Description : This script helps in creating the users, reset the passwords and r
 import textwrap
 import argparse
 import sys
-import arcesium.snowflake.snowflakeutil as snowflakeutil
+sys.path.append('/g/dba/oguri/dba/snowflake')
+import snowflakeutil
 from datetime import datetime
 
 logfile = '/g/dba/logs/snowflake/snowflake_user_management_{}.log'.format(datetime.now().strftime("%d-%b-%Y-%H-%M-%S"))
@@ -16,25 +17,25 @@ def parse_arguments():
     parser = argparse.ArgumentParser(add_help=True, formatter_class=argparse.RawDescriptionHelpFormatter,
     description=textwrap.dedent('''\
     example :
-    sudo -u sqlexec python snowflake_manage_database_user.py --create_user --pod baamuat --username cocoa_app --dbname arcesium_data_warehouse --user_type app --appname cocoa --user_mail cocoa-dev@arcesium.com 
+    sudo -u sqlexec python snowflake_user_management.py --create_user --pod baamuat --username cocoa_app --dbname arcesium_data_warehouse --user_type app --appname cocoa --user_mail cocoa-dev@arcesium.com 
                                   OR
-    sudo -u sqlexec python snowflake_manage_database_user.py --create_user --pod baamuat --username soguri --dbname arcesium_data_warehouse --user_type temporary --retention 90 --user_mail oguri@arcesium.com
+    sudo -u sqlexec python snowflake_user_management.py --create_user --pod baamuat --username soguri --dbname arcesium_data_warehouse --user_type temporary --retention 90 --user_mail oguri@arcesium.com
                                   OR
-    sudo -u sqlexec python snowflake_manage_database_user.py --delete_user --pod baamuat --username cocoa_app
+    sudo -u sqlexec python snowflake_user_management.py --delete_user --pod baamuat --username cocoa_app
                                   OR
-    sudo -u sqlexec python snowflake_manage_database_user.py --reset_user_password --pod baamuat --username cocoa_app
+    sudo -u sqlexec python snowflake_user_management.py --reset_user_password --pod baamuat --username cocoa_app
                                   OR
-    sudo -u sqlexec python snowflake_manage_database_user.py --extend_retention_period --pod baamuat --username temp_oguri --retention 90
+    sudo -u sqlexec python snowflake_user_management.py --extend_retention_period --pod baamuat --username temp_oguri --retention 90
                                   OR
-    sudo -u sqlexec python snowflake_manage_database_user.py --delete_expired_users --pod baamuat
+    sudo -u sqlexec python snowflake_user_management.py --delete_expired_users --pod baamuat
                                   OR
-    sudo -u sqlexec python snowflake_manage_database_user.py --unlock_user --pod baamuat --username cocoa_app
+    sudo -u sqlexec python snowflake_user_management.py --unlock_user --pod baamuat --username cocoa_app
                                   OR
-    sudo -u sqlexec python snowflake_manage_database_user.py --rotate_passwords --pod baamuat
+    sudo -u sqlexec python snowflake_user_management.py --rotate_passwords --pod baamuat
                                   OR
-    sudo -u sqlexec python snowflake_manage_database_user.py --grant_additional_permissions --permission_type database_owner --dbname arcesium_data_warehouse --username temp_oguri --pod terra
+    sudo -u sqlexec python snowflake_user_management.py --grant_additional_permissions --permission_type database_owner --dbname arcesium_data_warehouse --username temp_oguri --pod terra
                                   OR
-    sudo -u sqlexec python snowflake_manage_database_user.py --grant_additional_permissions --permission_type monitoring_owner --username temp_oguri --pod terra   
+    sudo -u sqlexec python snowflake_user_management.py --grant_additional_permissions --permission_type monitoring_owner --username temp_oguri --pod terra   
     '''))
     # Parse the input task to be performed
     task = parser.add_mutually_exclusive_group(required=True)
@@ -102,45 +103,55 @@ def main():
         if args.user_type == 'app':
             if args.username is None or args.dbname is None or args.appname is None or args.user_mail is None:
                 print("Missing required field for create user")
-                print("sudo -u sqlexec python snowflake_manage_database_user.py --create_user --pod baamuat --username cocoa_app --dbname arcesium_data_warehouse --user_type app --appname cocoa --user_mail cocoa-dev@arcesium.com")
+                print("sudo -u sqlexec python snowflake_user_management.py --create_user --pod baamuat"
+                      " --username cocoa_app --dbname arcesium_data_warehouse --user_type app --appname cocoa"
+                      " --user_mail cocoa-dev@arcesium.com")
                 sys.exit(1)
         if args.user_type in ['third_party_app','customer','trm','app_team','dba']:
             if args.username is None or args.dbname is None or args.user_mail is None:
                 print("Missing required field for create user")
-                print("sudo -u sqlexec python snowflake_manage_database_user.py --create_user --pod baamuat --username looker_user --dbname arcesium_data_warehouse --user_type third_party_app --user_mail dba-ops-team@arcesium.com")
+                print("sudo -u sqlexec python snowflake_user_management.py --create_user --pod baamuat"
+                      " --username looker_user --dbname arcesium_data_warehouse --user_type third_party_app"
+                      " --user_mail dba-ops-team@arcesium.com")
                 sys.exit(1)
         if args.user_type == 'temporary':
             if args.username is None or args.dbname is None or args.user_mail is None or args.retention is None:
                 print("Missing required field for create user")
-                print("sudo -u sqlexec python snowflake_manage_database_user.py --create_user --pod terra --username soguri --dbname arcesium_data_warehouse --user_type temporary --retention 90 --user_mail oguri@arcesium.com")
+                print("sudo -u sqlexec python snowflake_user_management.py --create_user --pod terra"
+                      " --username soguri --dbname arcesium_data_warehouse --user_type temporary"
+                      " --retention 90 --user_mail oguri@arcesium.com")
                 sys.exit(1)
     if cmd == 'drop_user' and args.username is None:
         print('Missing required field for drop user')
-        print("example : sudo -u sqlexec python snowflake_manage_database_user.py --delete_user --pod baamuat --username cocoa_app")
+        print("example : sudo -u sqlexec python snowflake_user_management.py --delete_user"
+              " --pod baamuat --username cocoa_app")
         sys.exit(1)
     if cmd == 'reset_user_password' and args.username is None:
         print('Missing required field for reset user password')
         print(
-            "example : sudo -u sqlexec python snowflake_manage_database_user.py --reset_user_password --pod baamuat --username cocoa_app")
+            "example : sudo -u sqlexec python snowflake_user_management.py --reset_user_password"
+            " --pod baamuat --username cocoa_app")
         sys.exit(1)
     if cmd == 'extend_retention_period' and (args.username is None or args.retention is None):
         print('Missing required fields to extend the retention for user')
-        print('sudo -u sqlexec python snowflake_manage_database_user.py --extend_retention_period --pod baamuat --username temp_oguri --retention 90')
+        print('sudo -u sqlexec python snowflake_user_management.py --extend_retention_period --pod baamuat'
+              ' --username temp_oguri --retention 90')
         sys.exit(1)
     if cmd == 'unlock_user' and args.username is None:
         print('Missing required fields to unlock user')
         print(
-            'sudo -u sqlexec python snowflake_manage_database_user.py --unlock_user --pod terra --username cocoa_app')
+            'sudo -u sqlexec python snowflake_user_management.py --unlock_user --pod terra --username cocoa_app')
         sys.exit(1)
     if cmd == 'grant_additional_permissions' and (args.permission_type is None or args.username is None):
         print('Missing required fields to grant permissions to user')
-        print('sudo -u sqlexec python snowflake_manage_database_user.py --grant_additional_permissions --permission_type warehouse_owner --pod terra --username cocoa_app')
+        print('sudo -u sqlexec python snowflake_user_management.py --grant_additional_permissions'
+              ' --permission_type warehouse_owner --pod terra --username cocoa_app')
         sys.exit(1)
-    if cmd == 'grant_additional_permissions' and args.permission_type == 'database_owner' and args.dbname is None:
+    if cmd == 'grant_additional_permissions' and args.permission_type in ['database_owner', 'database_reader'] and args.dbname is None and args.user_type is None:
         print('Missing required fields to grant permissions to user')
-        print(
-            'sudo -u sqlexec python snowflake_manage_database_user.py --grant_additional_permissions '
-            '--permission_type database_owner --dbname arcesium_data_warehouse --pod terra --username cocoa_app')
+        print('sudo -u sqlexec python snowflake_user_management.py --grant_additional_permissions'
+              ' --permission_type database_owner --pod terra --username cocoa_app'
+              ' --dbname arcesium_data_warehouse --user_type app')
         sys.exit(1)
 
     # Get list of accounts on which the operation need to be performed
@@ -194,9 +205,9 @@ def main():
             snowflakeutil.rotate_passwords(account=account, pod=pod)
         if cmd == 'grant_additional_permissions':
             logger.info("Granting additional permission {} to user {} or pod {}".format(permission_type, username, pod))
-            if permission_type == 'database_owner':
+            if permission_type in ['database_owner','database_reader']:
                 snowflakeutil.grant_additional_permissions(account=account, pod=pod, username=username,
-                                                           permission_type=permission_type, dbname=dbname )
+                                                           permission_type=permission_type, dbname=dbname, user_type=user_type)
             else:
                 snowflakeutil.grant_additional_permissions(account=account, pod=pod, username=username,
                                                            permission_type=permission_type)
