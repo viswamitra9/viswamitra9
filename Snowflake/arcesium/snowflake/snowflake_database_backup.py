@@ -1,82 +1,14 @@
 import textwrap
 import argparse
 import snowflake.connector
-import random
-import string
 import logging
 import subprocess
-import json
 from datetime import datetime
-from tabulate import tabulate
-import os, sys, stat
+import os, sys
 import pyodbc
 
 logfile = '/g/dba/logs/snowflake/snowflake_database_backup_{}.log'.format(datetime.now().strftime("%d-%b-%Y-%H-%M-%S"))
 logging.basicConfig(format='%(asctime)s %(name)-12s %(levelname)-8s %(message)s', filename=logfile, level=logging.INFO)
-os.chmod(logfile, 0o740)
-
-
-def sql_connect():
-    # create a SQL connection to DBMONITOR1B database and return the connection and cursor object
-    try:
-        conn_sql_dest = pyodbc.connect(
-            'DRIVER={Easysoft ODBC-SQL Server};Server=DBMONITOR.ia55.net;UID=;PWD=;ServerSPN=MSSQLSvc/dbmonitor1b.win.ia55.net;APP=DBRefreshUtil;')
-        cur_sql_dest = conn_sql_dest.cursor()
-        conn_sql_dest.autocommit = True
-        return cur_sql_dest, conn_sql_dest
-    except Exception as e:
-        logging.error("Error while creating database connection to DBMONITOR server {}".format(str(e)))
-        raise Exception("Error while creating database connection to DBMONITOR server {}".format(str(e)))
-
-
-def get_user_password(vaultpath):
-    retry_count = 0
-    while retry_count <= 10:
-        command = "vault read -field=secret {}".format(vaultpath)
-        pipes = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=True)
-        passw, err = pipes.communicate()
-        if pipes.returncode == 0:
-            password = passw.decode('utf-8')
-            command = "echo '{}' | grep -v 'Could not get working directory' | tr -d '\\n'".format(str(password))
-            pipes = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=True)
-            passw, err = pipes.communicate()
-            return str(passw.decode('utf-8'))
-        elif pipes.returncode == 2:
-            password = passw.decode('utf-8')
-            command = "echo '{}' | grep -v 'Could not get working directory' | tr -d '\\n'".format(str(password))
-            pipes = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=True)
-            passw, err = pipes.communicate()
-            return str(passw.decode('utf-8'))
-        else:
-            logging.warning(
-                "Error while reading password for user: sa in vault path {}, reading again : {} attempt".format(
-                    vaultpath, retry_count))
-            time.sleep(sleep_time)
-            retry_count = retry_count + 1
-            continue
-    return 1
-
-
-def get_dba_connection(account, host, username, password):
-    "to create snowflake connection"
-    try:
-        conn = snowflake.connector.connect(
-            account=account,
-            host=host,
-            user=username,
-            password=password,
-            database='DEMO_DB',
-            schema='public',
-            insecure_mode=True
-        )
-    except Exception as e:
-        raise Exception("Failed to obtain dba connection : {}".format(e))
-    cur = conn.cursor()
-    logging.info("Checking for dba warehouse and create it if not exists")
-    cur.execute("create warehouse if not exists DBA_WH with WAREHOUSE_SIZE=small")
-    cur.execute("use role accountadmin")
-    cur.execute("use warehouse DBA_WH")
-    return conn, cur
 
 
 def backup_database(account, host, dbname, pod):
