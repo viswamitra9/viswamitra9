@@ -19,6 +19,7 @@ sys.path.append('/g/dba/oguri/dba/snowflake')
 import pyodbc
 import time
 import datetime
+from dateutil.relativedelta import relativedelta
 
 from tabulate import tabulate
 
@@ -1260,9 +1261,9 @@ def snowflake_cost_utilization_report():
     # get the last 6 months as header row
     now = datetime.datetime.now()
     th = ''
-    for _ in range(0, 6):
-        now = now.replace(day=1) - datetime.timedelta(days=1)
-        th += "<th> {}_{} </th>".format(now.month, now.year)
+    for i in range(6, 0, -1):
+        temp_time = now+relativedelta(months=-i)
+        th += "<th> {}_{} </th>".format(temp_time.strftime("%b"), temp_time.year)
     mail_body = """
     Hi Team,
     <br><br><br>
@@ -1283,23 +1284,29 @@ def snowflake_cost_utilization_report():
         <th>POD</th>
         {}
     </tr>
-    """.format('<style> table { font-family: arial, sans-serif; border-collapse: collapse; width: 70%; } td, th { border: 1px solid #dddddd; text-align: left; padding: 8px; } tr:nth-child(even) { background-color: #dddddd;} </style>', th)
+    """.format('<style> table { font-family: arial, sans-serif; border-collapse: collapse; width: 70%; } td, '
+               'th { border: 1px solid #dddddd; text-align: left; padding: 8px; } '
+               'tr:nth-child(even) { background-color: #dddddd;} </style>', th)
     cur_sql_dest, conn_sql_dest = sql_connect()
     cur_sql_dest.execute("select lower(FriendlyName), lower(pod) from dbainfra.dbo.database_server_inventory "
                          "where lower(ServerType)='snowflake' and IsActive=1")
     for sql_result in cur_sql_dest.fetchall():
         connection, cursor = get_admin_connection(account=sql_result[0], pod=sql_result[1])
-        cursor.execute("WITH WAREHOUSE AS (select date_trunc('MONTH',end_time) month,ROUND(sum(credits_used),2)*4 cost"
-                       "  from snowflake.account_usage.WAREHOUSE_METERING_HISTORY where end_time between"
-                       " date_trunc('MONTH', dateadd(month,-6,current_timestamp)) and"
-                       " date_trunc('MONTH', current_timestamp) group by 1), STORAGE AS"
-                       " (select date_trunc('MONTH',USAGE_DATE) month,"
-                       "round(avg(storage_bytes + stage_bytes + failsafe_bytes)/1024/1024/1024/1024,2)*40 as cost "
+        cursor.execute("create temporary table months as select MONTH(ADD_MONTHS(current_timestamp, -(seq4(1)+1))) month"
+                       " ,YEAR(ADD_MONTHS(current_timestamp, -(seq4(1)+1))) year from table(generator(rowcount => 6)) v")
+        cursor.execute("WITH WAREHOUSE AS (select date_trunc('MONTH',START_TIME) month,CEIL(sum(credits_used),2)*4 cost "
+                       "from snowflake.account_usage.WAREHOUSE_METERING_HISTORY where START_TIME between "
+                       "date_trunc('MONTH', dateadd(month,-6,current_timestamp)) and "
+                       "date_trunc('MONTH', current_timestamp) group by 1),"
+                       "STORAGE AS "
+                       "(select date_trunc('MONTH',USAGE_DATE) month,"
+                       "CEIL(avg(storage_bytes + stage_bytes + failsafe_bytes)/power(1024, 4),2)*40 as cost "
                        "from snowflake.account_usage.storage_usage where USAGE_DATE between "
-                       "date_trunc('MONTH', dateadd(month,-6,current_timestamp)) and date_trunc('MONTH', current_timestamp)"
-                       " group by 1) select MONTH(WAREHOUSE.month)||'_'||YEAR(WAREHOUSE.month) AS MONTH,"
-                       "coalesce((WAREHOUSE.cost + STORAGE.cost),0) as cost from WAREHOUSE join STORAGE on "
-                       "(WAREHOUSE.month=STORAGE.month) ORDER BY MONTH desc")
+                       "date_trunc('MONTH', dateadd(month,-6,current_timestamp)) and "
+                       "date_trunc('MONTH', current_timestamp)  group by 1) "
+                       "select months.month||'_'||months.year as month, coalesce((WAREHOUSE.cost + STORAGE.cost),0) "
+                       "as cost from WAREHOUSE join STORAGE on (WAREHOUSE.month=STORAGE.month) right join months "
+                       "on (months.month=MONTH(WAREHOUSE.month))")
         result = cursor.fetchall()
         file_content += "<tr> <td> {} </td> ".format(sql_result[0])
         file_content += " <td> {} </td> ".format(sql_result[1])
@@ -1316,6 +1323,6 @@ def snowflake_cost_utilization_report():
     fh.write(file_content)
     fh.close()
     sub = "COST Report of Snowflake accounts for last 6 months"
-    send_mail(send_from="dba-ops@arcesium.com", send_to=["dba-ops-team@arcesium.com"], subject=sub,
+    send_mail(send_from="dba-ops@arcesium.com", send_to=["oguri@arcesium.com"], subject=sub,
               text=mail_body,files=[report])
     conn_sql_dest.close()
