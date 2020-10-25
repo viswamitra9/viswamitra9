@@ -1,11 +1,9 @@
 import textwrap
 import argparse
-import snowflake.connector
 import logging
-import subprocess
 from datetime import datetime
-import os, sys
-import pyodbc
+import sys
+import snowflakeutil
 
 logfile = '/g/dba/logs/snowflake/snowflake_database_backup_{}.log'.format(datetime.now().strftime("%d-%b-%Y-%H-%M-%S"))
 logging.basicConfig(format='%(asctime)s %(name)-12s %(levelname)-8s %(message)s', filename=logfile, level=logging.INFO)

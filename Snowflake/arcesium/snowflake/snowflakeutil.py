@@ -132,7 +132,7 @@ def sql_connect():
             retry_count += 1
             time.sleep(DB_WAIT_TIME)
             logger.info("trying again to connect to DBMONITOR, re-try count : {}".format(retry_count))
-    raise Exception("Error while creating database connection to DBMONITOR server {}".format(str(e)))
+            raise Exception("Error while creating database connection to DBMONITOR server {}".format(str(e)))
 
 
 def get_snowflake_connection(account, username, password):
