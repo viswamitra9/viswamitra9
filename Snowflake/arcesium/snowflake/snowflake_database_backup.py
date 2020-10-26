@@ -25,7 +25,6 @@ def backup_database(account, pod, dbname):
         logger.info("Creating DBA connection")
         dba_conn, dba_cur = snowflakeutil.get_admin_connection(account, pod)
         logger.info("Created super user connection")
-        dba_cur.execute("use role accountadmin")
         if dbname == 'all':
             dba_cur.execute("select database_name from information_schema.databases where lower(database_name) "
                             "not in ('audit_archive','demo_db','snowflake','snowflake_sample_data','util_db') and"
@@ -65,8 +64,8 @@ def parse_arguments():
 
 
 def main():
-    args = parse_arguments()
-    pod = args.pod
+    args   = parse_arguments()
+    pod    = args.pod
     dbname = args.dbname
 
     # implement logging
