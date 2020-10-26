@@ -26,14 +26,23 @@ def backup_database(account, pod, dbname):
         dba_conn, dba_cur = snowflakeutil.get_admin_connection(account, pod)
         logger.info("Created super user connection")
         if dbname == 'all':
+            dba_cur.execute("show shares")
             dba_cur.execute("select database_name from information_schema.databases where lower(database_name) "
-                            "not in ('audit_archive','demo_db','snowflake','snowflake_sample_data','util_db') and"
-                            "lower(database_name) not like 'backup_%'")
+                            "not in ('audit_archive','demo_db','snowflake','snowflake_sample_data','util_db') and "
+                            "lower(database_name) not like 'backup_%' and database_name not in "
+                            "(SELECT \"database_name\" FROM "
+                            "TABLE(RESULT_SCAN(LAST_QUERY_ID())) where \"kind\"='INBOUND')")
             result = dba_cur.fetchall()
             for db in result:
-                backup_name = "backup_{}_{}".format(db, datetime.now().strftime("%d%b%Y"))
-                dba_cur.execute("create database if not exists {} clone {}".format(backup_name, db))
-                logger.info("Backup {} created successfully for database {} in pod {}".format(backup_name, db, pod))
+                backup_name = "backup_{}_{}".format(db[0], datetime.now().strftime("%d%b%Y"))
+                dba_cur.execute("create database if not exists {} clone {}".format(backup_name, db[0]))
+                logger.info("Backup {} created successfully for database {} in pod {}".format(backup_name, db[0], pod))
+        dba_cur.execute("select count(*) from information_schema.databases where lower(database_name)='{}'".format(str(dbname).lower()))
+        result = dba_cur.fetchall()
+        if result[0][0] == 0:
+            logger.error("Database {} does not exists in pod {}".format(dbname, pod))
+            raise Exception("Database {} does not exists in pod {}".format(dbname, pod))
+            exit(1)
         backup_name = "backup_{}_{}".format(dbname, datetime.now().strftime("%d%b%Y"))
         dba_cur.execute("create database if not exists {} clone {}".format(backup_name, dbname))
         logger.info("Backup {} created successfully for database {} in pod {}".format(backup_name, dbname, pod))
