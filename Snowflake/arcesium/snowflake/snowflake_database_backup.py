@@ -37,15 +37,16 @@ def backup_database(account, pod, dbname):
                 backup_name = "backup_{}_{}".format(db[0], datetime.now().strftime("%d%b%Y"))
                 dba_cur.execute("create database if not exists {} clone {}".format(backup_name, db[0]))
                 logger.info("Backup {} created successfully for database {} in pod {}".format(backup_name, db[0], pod))
-        dba_cur.execute("select count(*) from information_schema.databases where lower(database_name)='{}'".format(str(dbname).lower()))
-        result = dba_cur.fetchall()
-        if result[0][0] == 0:
-            logger.error("Database {} does not exists in pod {}".format(dbname, pod))
-            raise Exception("Database {} does not exists in pod {}".format(dbname, pod))
-            exit(1)
-        backup_name = "backup_{}_{}".format(dbname, datetime.now().strftime("%d%b%Y"))
-        dba_cur.execute("create database if not exists {} clone {}".format(backup_name, dbname))
-        logger.info("Backup {} created successfully for database {} in pod {}".format(backup_name, dbname, pod))
+        if dbname != 'all':
+            dba_cur.execute("select count(*) from information_schema.databases where lower(database_name)='{}'".format(str(dbname).lower()))
+            result = dba_cur.fetchall()
+            if result[0][0] == 0:
+                logger.error("Database {} does not exists in pod {}".format(dbname, pod))
+                raise Exception("Database {} does not exists in pod {}".format(dbname, pod))
+                exit(1)
+            backup_name = "backup_{}_{}".format(dbname, datetime.now().strftime("%d%b%Y"))
+            dba_cur.execute("create database if not exists {} clone {}".format(backup_name, dbname))
+            logger.info("Backup {} created successfully for database {} in pod {}".format(backup_name, dbname, pod))
     except Exception as e:
         raise Exception("Failed to take backup of database in pod {} with error : {}".format(pod, str(e)))
 
