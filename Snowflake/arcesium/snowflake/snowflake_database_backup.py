@@ -4,13 +4,12 @@ Description : This script helps in taking database backup using zero copy clones
 """
 import textwrap
 import argparse
-import logging
 from datetime import datetime
 import sys
 import arcesium.snowflake.snowflakeutil as snowflakeutil
 
 logfile = '/g/dba/logs/snowflake/snowflake_database_backup_{}.log'.format(datetime.now().strftime("%d-%b-%Y-%H-%M-%S"))
-logging.basicConfig(format='%(asctime)s %(name)-12s %(levelname)-8s %(message)s', filename=logfile, level=logging.INFO)
+logger = ''
 
 
 def backup_database(account, pod, dbname):
@@ -23,9 +22,9 @@ def backup_database(account, pod, dbname):
         dbname: name of database arcesium_data_warehouse or all
     """
     try:
-        logging.info("Creating DBA connection")
+        logger.info("Creating DBA connection")
         dba_conn, dba_cur = snowflakeutil.get_admin_connection(account, pod)
-        logging.info("Created super user connection")
+        logger.info("Created super user connection")
         dba_cur.execute("use role accountadmin")
         if dbname == 'all':
             dba_cur.execute("select database_name from information_schema.databases where lower(database_name) "
@@ -35,10 +34,10 @@ def backup_database(account, pod, dbname):
             for db in result:
                 backup_name = "backup_{}_{}".format(db, datetime.now().strftime("%d%b%Y"))
                 dba_cur.execute("create database if not exists {} clone {}".format(backup_name, db))
-                logging.info("Backup {} created successfully for database {} in pod {}".format(backup_name, db, pod))
+                logger.info("Backup {} created successfully for database {} in pod {}".format(backup_name, db, pod))
         backup_name = "backup_{}_{}".format(dbname, datetime.now().strftime("%d%b%Y"))
         dba_cur.execute("create database if not exists {} clone {}".format(backup_name, dbname))
-        logging.info("Backup {} created successfully for database {} in pod {}".format(backup_name, dbname, pod))
+        logger.info("Backup {} created successfully for database {} in pod {}".format(backup_name, dbname, pod))
     except Exception as e:
         raise Exception("Failed to take backup of database in pod {} with error : {}".format(pod, str(e)))
 
@@ -70,6 +69,10 @@ def main():
     pod = args.pod
     dbname = args.dbname
 
+    # implement logging
+    global logger
+    logger = snowflakeutil.setup_logging(logfile=logfile)
+
     instances = {}
     try:
         # Alert details
@@ -97,11 +100,11 @@ def main():
                 instances[instance[0]] = instance[1]
         conn_sql_dest.close()
 
-        logging.info("Accounts to be backed up are {}".format(instances))
+        logger.info("Accounts to be backed up are {}".format(instances))
         # Run the backup function for all instances
         for account in instances:
             pod = instances[account]
-            logging.info("Taking backup of database in pod {}".format(pod))
+            logger.info("Taking backup of database in pod {}".format(pod))
             backup_database(account, pod, dbname)
     except Exception as e:
         alert_description = "Failed to take database {} backup from pod {}, check logfile {}".format(dbname, pod,logfile)
