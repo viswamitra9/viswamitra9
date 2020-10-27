@@ -40,3 +40,5 @@ $$;
 !set friendly=false;
 !set timing=false;
 !set output_format=plain
+
+CALL CHECK_ENABLE_REPLICATION('&{DBNAME}','&{ACCOUNTNAME}')

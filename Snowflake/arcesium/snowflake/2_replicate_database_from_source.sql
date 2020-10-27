@@ -1,4 +1,5 @@
 !set variable_substitution=true;
+
 !set friendly=false;
 !set timing=false;
 !set quiet=true
