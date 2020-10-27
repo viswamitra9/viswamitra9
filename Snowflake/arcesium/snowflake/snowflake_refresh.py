@@ -15,6 +15,7 @@ radarutil=RadarUtil()
 
 sys.path.append('/g/dba/rds')
 import pod_automation_util
+import arcesium.snowflake.snowflakeutil as snowflakeutil
 
 import dbrefreshutil
 from dbrefreshutil import DBRefreshUtil
@@ -49,20 +50,21 @@ def main():
     try:
         args = parse_arguments()
         ## Get the input arguments
-	source_pod      = args.source_pod
-	destination_pod = args.destination_pod
-	DBNAME          = args.dbname
-	## Get account details and host information
-	cur_sql_dest, conn_sql_dest = pod_automation_util.sql_connect()
-	rows = cur_sql_dest.execute("select upper(FriendlyName) as accountnumber from dbainfra.dbo.database_server_inventory where ServerType='snowflake' and pod = '{}'".format(source_pod))
-	row = rows.fetchone()
-	source_host = row[0]
-	source_account = str(source_host).split('.')[0]
-	rows = cur_sql_dest.execute("select upper(FriendlyName) as accountnumber,lower(Env) as env from dbainfra.dbo.database_server_inventory where ServerType='snowflake' and pod = '{}'".format(destination_pod))
-	row = rows.fetchone()
-	destination_host = row[0]
+        source_pod      = args.source_pod
+        destination_pod = args.destination_pod
+        DBNAME          = args.dbname
+        ## Get account details and host information
+        cur_sql_dest, conn_sql_dest = snowflakeutil.sql_connect()
+        rows = cur_sql_dest.execute("select upper(FriendlyName) as accountnumber "
+                                    "from dbainfra.dbo.database_server_inventory "
+                                    "where lower(ServerType)='snowflake' and pod = '{}'".format(str(source_pod).lower()))
+        row = rows.fetchone()
+        source_account = row[0][0]
+        rows = cur_sql_dest.execute("select upper(FriendlyName) as accountnumber,lower(Env) as env from dbainfra.dbo.database_server_inventory where ServerType='snowflake' and pod = '{}'".format(destination_pod))
+        row = rows.fetchone()
+        destination_host = row[0]
         destination_env  = row[1]
-	destination_account = str(destination_host).split('.')[0]
+        destination_account = str(destination_host).split('.')[0]
         ## Variables for radar alerts
         alert_source = "dba"
         alert_class = "Page"

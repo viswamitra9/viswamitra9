@@ -1292,21 +1292,22 @@ def snowflake_cost_utilization_report():
                          "where lower(ServerType)='snowflake' and IsActive=1")
     for sql_result in cur_sql_dest.fetchall():
         connection, cursor = get_admin_connection(account=sql_result[0], pod=sql_result[1])
-        cursor.execute("create temporary table months as select MONTH(ADD_MONTHS(current_timestamp, -(seq4(1)+1))) month"
+        cursor.execute("create or replace temporary table months as select MONTH(ADD_MONTHS(current_timestamp, -(seq4(1)+1))) month"
                        " ,YEAR(ADD_MONTHS(current_timestamp, -(seq4(1)+1))) year from table(generator(rowcount => 6)) v")
-        cursor.execute("WITH WAREHOUSE AS (select date_trunc('MONTH',START_TIME) month,CEIL(sum(credits_used),2)*4 cost "
+        cursor.execute("WITH WAREHOUSE AS (select date_trunc('MONTH',START_TIME) month,CEIL(sum(credits_used)*4,2) cost "
                        "from snowflake.account_usage.WAREHOUSE_METERING_HISTORY where START_TIME between "
                        "date_trunc('MONTH', dateadd(month,-6,current_timestamp)) and "
                        "date_trunc('MONTH', current_timestamp) group by 1),"
                        "STORAGE AS "
                        "(select date_trunc('MONTH',USAGE_DATE) month,"
-                       "CEIL(avg(storage_bytes + stage_bytes + failsafe_bytes)/power(1024, 4),2)*40 as cost "
+                       "CEIL((avg(storage_bytes + stage_bytes + failsafe_bytes)/power(1024, 4))*40,2) as cost "
                        "from snowflake.account_usage.storage_usage where USAGE_DATE between "
                        "date_trunc('MONTH', dateadd(month,-6,current_timestamp)) and "
                        "date_trunc('MONTH', current_timestamp)  group by 1) "
                        "select months.month||'_'||months.year as month, coalesce((WAREHOUSE.cost + STORAGE.cost),0) "
                        "as cost from WAREHOUSE join STORAGE on (WAREHOUSE.month=STORAGE.month) right join months "
-                       "on (months.month=MONTH(WAREHOUSE.month))")
+                       "on (months.month=MONTH(WAREHOUSE.month) and months.year=YEAR(WAREHOUSE.month)) "
+                       "order by months.year,months.month")
         result = cursor.fetchall()
         file_content += "<tr> <td> {} </td> ".format(sql_result[0])
         file_content += " <td> {} </td> ".format(sql_result[1])
