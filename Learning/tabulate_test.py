@@ -1,4 +1,5 @@
-import datetime
-from datetime import datetime
+def test(id):
+    id = id + 100
+    print(id)
 
-print(datetime.now().strftime("%d%b%Y%H%M%S"))
+test(200)
