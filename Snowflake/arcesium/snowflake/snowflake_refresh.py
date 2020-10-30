@@ -7,21 +7,13 @@ import argparse
 from datetime import datetime
 import traceback
 import json
-
 sys.path.append('/g/dba/pythonutilities/')
 from pythonutils import PythonUtils
-
 sys.path.append('/g/dba/radarutil/')
 from radarutil import RadarUtil
 radarutil=RadarUtil()
-
-sys.path.append('/g/dba/rds')
-import pod_automation_util
 import arcesium.snowflake.snowflakeutil as snowflakeutil
-
-import dbrefreshutil
 from dbrefreshutil import DBRefreshUtil
-
 import vaultutil
 
 logger = ''
