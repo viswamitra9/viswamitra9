@@ -5,7 +5,6 @@ Description : This is to refresh the Snowflake databases from source to destinat
 import sys
 import argparse
 from datetime import datetime
-import subprocess
 import traceback
 import json
 
