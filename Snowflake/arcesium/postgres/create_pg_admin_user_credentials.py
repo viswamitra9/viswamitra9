@@ -92,6 +92,35 @@ def get_sa_user_password():
         print("Failed to read secret from vault : {} with error : {}".format(vaultpath, e))
         raise Exception("Failed to read secret from vault : {} with error : {}".format(vaultpath, e))
 
+def write_secret_to_vault(vaultpath,secret):
+    """
+    PURPOSE:
+        Write secret to vault, It is expected that vault read may fail,
+        so retry for 10 times with delay of 10 sec in each run.
+    INPUTS:
+        vaultpath, secret
+    """
+    try:
+        # Retry count variable
+        retry_count = 0
+        # error variable to store error message
+        error = ''
+        while retry_count <= 10:
+            command = "vault write {} secret=\'{}\'".format(vaultpath, secret)
+            writetovault = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=True)
+            (output, error) = writetovault.communicate()
+            if writetovault.returncode == 0:
+                return
+            else:
+                retry_count = retry_count + 1
+                time.sleep(10)
+        logger.error("Error occurred while writing to vault {}, error : {}".format(vaultpath, str(error)))
+        exit(1)
+    except Exception as e:
+        logger.error("Failed to write secret to vault : {} with error : {}".format(vaultpath, e))
+        logger.exception("Exception while writing to vault {}".format(str(e)))
+        raise Exception("Failed to write secret to vault : {} with error : {}".format(vaultpath, e))
+
 
 def main():
     args = parse_arguments()
@@ -116,13 +145,13 @@ def main():
     logged_in_user = str(stdout).rstrip("\n\r") + "_sa"
 
     if env == 'ALL':
-        query = "select pod,Alias as instancename,host from  dbainfra.dbo.database_server_inventory " \
+        query = "select pod,Alias as instancename,lower(host) from  dbainfra.dbo.database_server_inventory " \
                 "where ServerType='PGDB' and pod!='TEST' and Alias is not null"
     elif srv:
-        query = "select pod,Alias as instancename,host from  dbainfra.dbo.database_server_inventory " \
+        query = "select pod,Alias as instancename,lower(host) from  dbainfra.dbo.database_server_inventory " \
                 "where ServerType='PGDB' and pod!='TEST' and Alias =('" + str(srv).lower() + "')"
     else:
-        query = "select pod,Alias as instancename,host from  dbainfra.dbo.database_server_inventory " \
+        query = "select pod,Alias as instancename,lower(host) from  dbainfra.dbo.database_server_inventory " \
                 "where ServerType='PGDB' and pod!='TEST' and Alias is not null and upper(Env) in ('{}')".format(env)
 
     cur_sql_dest, conn_sql_dest = sql_connect()
@@ -144,49 +173,46 @@ def main():
         print('Deleting the user ' + user + '.........')
     else:
         file_obj.write(
-            "{} : Please enter the user name as {}. You are allowed to create reset your own admin user account only".format(
-                date_t, logged_in_user))
-        print(
-            "{} : Please enter the user name as {}. You are allowed to create reset your own admin user account only".format(
-                date_t, logged_in_user))
+            "{} : Please enter the user name as {}. You are allowed to create reset "
+            "your own admin user account only".format(date_t, logged_in_user))
+        print("{} : Please enter the user name as {}. You are allowed to create reset "
+              "your own admin user account only".format(date_t, logged_in_user))
         sys.exit(1)
     for row in result:
         try:
             conn = psycopg2.connect(host=row.host, user='sa', password=sa_pass, dbname='postgres', sslmode='require')
             cur = conn.cursor()
         except Exception as e:
-            file_obj.write(
-                "{} : Not able to create/delete user in machine {}, not able to connect to the machine".format(date_t,
-                                                                                                               row.host))
+            file_obj.write("{} : Not able to create/delete user in machine {}, "
+                           "not able to connect to the machine".format(date_t,row.host))
             file_obj.write(str(e))
             continue
         x = ''.join(
             random.choice(string.ascii_uppercase + string.ascii_lowercase + string.digits) for _ in range(pass_length))
         podname = row.pod
         instance = row.instancename
-        query = "select 1 from pg_roles where rolname = '" + user + "'"
-        cur.execute(query)
+        cur.execute("select 1 from pg_roles where rolname = '{}'".format(user))
         if cur.rowcount != 0:
             check_user = cur.fetchone()[0]
         else:
             check_user = 0
         if cmd == 'CREATE':
             if check_user != 1:
-                cur.execute('create user ' + user + ' password \'' + x + '\' CREATEDB CREATEROLE')
+                cur.execute("create user  {}  password '{}' CREATEDB CREATEROLE".format(user, x))
                 cur.execute("select count(*) from pg_roles where rolname='db_owner'")
                 if cur.fetchone()[0] == 0:
                     cur.execute("create role db_owner")
                     cur.execute("grant db_owner to {}".format(user))
                 cur.execute("grant db_owner to {}".format(user))
-                cur.execute('grant sa,rds_superuser to ' + user + ' WITH ADMIN OPTION')
+                cur.execute("grant sa,rds_superuser to {} WITH ADMIN OPTION".format(user))
                 content = row.host + ':*:*:' + user + ':' + x
                 print(content)
                 FNULL = open(os.devnull, 'w')
                 subprocess.Popen(['vault write /secret/default/v1/db-postgres-credentials/password/%s/%s/%s %s=%s' % (
                     podname, instance, user, user, x)], shell=True, stdout=FNULL, stderr=subprocess.STDOUT)
             else:
-                cur.execute('alter user ' + user + ' password \'' + x + '\'')
-                cur.execute('grant sa to ' + user)
+                cur.execute("alter user {} password '{}'".format(user, x))
+                cur.execute("grant sa to {}".format(user))
                 content = row.host + ':*:*:' + user + ':' + x
                 print(content)
                 FNULL = open(os.devnull, 'w')
