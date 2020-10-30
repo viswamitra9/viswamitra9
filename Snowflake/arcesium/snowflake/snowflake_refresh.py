@@ -124,12 +124,137 @@ def check_enable_refresh(source_account, source_pod, destination_account, destin
     return 0
 
 
-def backup_stages_pipes_tasks(dbname):
+def backup_stages_pipes_tasks(destination_account, destination_pod, dbname):
     """
     This will take backup of pipes, stages, file formats and tasks.
+    1. Create a table stage_properties which holds the properties of stages
+    2. Create a table stages_pipes_streams_tasks which holds definition and order in which order the statements need to
+    be executed
     """
+    connection, cursor = snowflakeutil.get_admin_connection(destination_account, destination_pod)
+    cursor.execute("create or replace table stage_properties (schemaname varchar, stagename varchar, "
+                   "parent_property varchar, property varchar, property_type varchar, "
+                   "property_value varchar, property_default varchar)")
+    # Backup stages and definition of stages
+    cursor.execute("create or replace table stage_pipes_streams_tasks(ordr int,def varchar)")
+    cursor.execute("select PIPE_SCHEMA||'.'||PIPE_NAME as pipe_name from information_schema.pipes where pipe_catalog='{}'".format(dbname))
+    for var in cursor.fetchall():
+        pipe_name = var[0]
+        cursor.execute("insert into stage_pipes_streams_tasks select 5, get_ddl('pipe', '{}')".format(pipe_name))
+    # Backup tasks and definitions
+    cursor.execute("show tasks in database")
+    cursor.execute("select \"schema_name\"||.||\"name\" as task_name from table(result_scan(last_query_id()))")
+    for var in cursor.fetchall():
+        task_name = var[0]
+        cursor.execute("insert into stage_pipes_streams_tasks select 4, get_ddl('task', '{}')".format(task_name))
+    # Backup streams and definitions
+    cursor.execute("show streams in database")
+    cursor.execute("select \"schema_name\"||.||\"name\" as task_name from table(result_scan(last_query_id()))")
+    for var in cursor.fetchall():
+        stream_name = var[0]
+        cursor.execute("insert into stage_pipes_streams_tasks select 3, get_ddl('stream', '{}')".format(stream_name))
+    # Backup file formats and definitions
+    cursor.execute("show file formats in database")
+    cursor.execute("select \"schema_name\"||.||\"name\" as task_name from table(result_scan(last_query_id()))")
+    for var in cursor.fetchall():
+        format_name = var[0]
+        cursor.execute("insert into stage_pipes_streams_tasks select 1, get_ddl('file_format', '{}')".format(format_name))
+    # Backup of stages and properties
+    cursor.execute("select STAGE_SCHEMA, STAGE_NAME from information_schema.stages where stage_catalog='{}'".format(dbname))
+    for var in cursor.fetchall():
+        stage_schema = var[0]
+        stage_name   = var[1]
+        stg_name = stage_schema+'.'+stage_name
+        cursor.execute("desc stage {}".format(stg_name))
+        cursor.execute("insert into stage_properties select '{}','{}',* from table(result_scan(last_query_id()))".format(stage_schema, stage_name))
+    stage_def = """
+    insert into stage_pipes_streams_tasks
+    WITH T AS (
+    select
+    SCHEMANAME||'.'||STAGENAME as stagename,
+    CASE
+    WHEN parent_property = 'STAGE_LOCATION' THEN LISTAGG(property||'='||REPLACE(REPLACE(PROPERTY_VALUE,'["','\''),'"]','\''),' ')
+    WHEN parent_property = 'STAGE_INTEGRATION' THEN LISTAGG(property||'='||REPLACE(REPLACE(PROPERTY_VALUE,'[','\''),']','\''),' ')
+    WHEN parent_property = 'STAGE_COPY_OPTIONS' THEN 'COPY_OPTIONS = ('||LISTAGG(property||'='||REPLACE(REPLACE(PROPERTY_VALUE,'[',' '),']',' '),', ')||')'
+    WHEN parent_property = 'STAGE_FILE_FORMAT'  THEN 'FILE_FORMAT = ('|| LISTAGG(property||'='||REPLACE(REPLACE((CASE
+                                                                                                                WHEN PROPERTY_VALUE = 'true' THEN PROPERTY_VALUE
+                                                                                                                WHEN PROPERTY_VALUE = 'false' THEN PROPERTY_VALUE
+                                                                                                                WHEN PROPERTY_VALUE = '0' THEN PROPERTY_VALUE
+                                                                                                                WHEN PROPERTY_VALUE = '1' THEN PROPERTY_VALUE
+                                                                                                                ELSE concat('\'',PROPERTY_VALUE,'\'') END)
+                                                                                                                ,'[',' '),']',' '),', ')||')'
+    ELSE ' '
+    END as options
+    from stage_properties
+    where PROPERTY_VALUE is not null and PROPERTY_VALUE != ''
+    group by SCHEMANAME,STAGENAME,stagename,parent_property
+    order by schemaname,stagename)
+    select 2,'CREATE STAGE '||STAGENAME||' '||LISTAGG(OPTIONS,' ')||';' from T
+    group by STAGENAME
+    """
+    return 0
 
 
+def backup_users_roles_permissions(destination_account, destination_pod,dbname):
+    """
+    by default snowflake refresh do not take care of permissions so permissions need to be copied explicitly
+    """
+    connection, cursor = snowflakeutil.get_admin_connection(destination_account, destination_pod)
+    cursor.execute("show users")
+    cursor.execute("create or replace table dbusers as select *  from table(result_scan(last_query_id()))")
+    cursor.execute("show roles")
+    cursor.execute("create or replace table dbroles as select * from table(result_scan(last_query_id()))")
+    cursor.execute("CREATE OR replace TABLE dbgrants(created_on timestamp_ltz,privilege varchar,granted_on varchar,"
+                   "name varchar,granted_to varchar,grantee_name varchar,grant_option varchar,granted_by varchar)")
+    cursor.execute("SELECT \"name\" as NAME FROM DBROLES")
+    for var in cursor.fetchall():
+        rolname = var[0]
+        cursor.execute("show grants to role {}".format(rolname))
+        cursor.execute("insert into dbgrants select * from table(result_scan(last_query_id()))")
+        cursor.execute("show grants on role {}".format(rolname))
+        cursor.execute("insert into dbgrants select * from table(result_scan(last_query_id()))")
+    cursor.execute("SELECT \"name\" as NAME FROM DBUSERS")
+    for var in cursor.fetchall():
+        username = var[0]
+        cursor.execute("show grants to user {}".format(username))
+        cursor.execute("insert into dbgrants select *,null,null,null from table(result_scan(last_query_id()))")
+        cursor.execute("show grants on user {}".format(username))
+        cursor.execute("insert into dbgrants select *,null,null,null from table(result_scan(last_query_id()))")
+    cursor.execute("show shares")
+    cursor.execute("select \"name\" from table(result_scan(last_query_id()))"
+                   " where \"kind\"='OUTBOUND' and \"database_name\"='{}'".format(dbname))
+    for var in cursor.fetchall():
+        share_name = var[0]
+        cursor.execute("show grants to share {}".format(share_name))
+        cursor.execute("insert into dbgrants select * from table(result_scan(last_query_id()))")
+        cursor.execute("show grants on share {}".format(share_name))
+        cursor.execute("insert into dbgrants select * from table(result_scan(last_query_id()))")
+    return 0
+
+
+def restore_stages_pipes_tasks_permissions(destination_account, destination_pod, dbname):
+    """
+    Restore the ddl statements created for stages, pipes, permissions etc in previous step to the database. This where
+    the actual downtime starts.
+    """
+    connection, cursor = snowflakeutil.get_admin_connection(destination_account, destination_pod)
+    cursor.execute("alter database {} rename to {}_old".format(dbname,dbname))
+    cursor.execute("alter database {}_clone rename to {}".format(dbname,dbname))
+    cursor.execute("select def from stage_pipes_streams_tasks order by ordr")
+    cursor.execute("use database {}".format(dbname))
+    for var in cursor.fetchall():
+        sql_statement = var[0]
+        cursor.execute(sql_statement)
+    query = """
+    select 'GRANT '||PRIVILEGE||' ON '||GRANTED_ON||' '||NAME||' TO '||GRANTEE_NAME||';' 
+    from dbgrants where granted_on not in ('ACCOUNT') and GRANTEE_NAME not in ('ACCOUNTADMIN','SECURITYADMIN') 
+    and name not like 'SNOWFLAKE_SAMPLE_DATA%' and strtok(NAME,'.',1) = '{}'
+    """.format(str(dbname).upper())
+    cursor.execute(query)
+    for var in cursor.fetchall():
+        sql_statement = var[0]
+        cursor.execute(sql_statement)
+    return 0
 
 
 def main():
@@ -201,7 +326,8 @@ def main():
         accounts. This should be enabled by Snowflake team between two accounts. After that login to source account(prod)
         and enable replication for the database to destination account (uat).
         """
-        update_current_running_status(source_pod, destination_pod, statuscode=2, comments="Refresh is possible.Enabling replication beteen source pod {} and destination pod {}".format(source_pod,destination_pod))
+        update_current_running_status(source_pod, destination_pod, statuscode=2, comments="Refresh is possible.Enabling "
+                                     "replication between source pod {} and destination pod {}".format(source_pod,destination_pod))
         logger.info("Enabling replication from source pod {} to destination pod {}".format(source_pod,destination_pod))
         status_message = "Refresh environment\n      Source: {}\n      Destination: {}\nStatus: Refresh is possible." \
                  "Enabling replication beteen source pod {} and destination pod {} \n" \
@@ -218,7 +344,8 @@ def main():
                  "Failed to enable replication beteen source pod {} and destination pod {} \n" \
                  "Please check the attached log file for further details".format(source_pod,destination_pod,source_pod,destination_pod)
             dbrefreshutil.update_current_running_refresh_status_on_desflow(status_message=status_message,files_to_attach=[logfile])
-            alert_description = "Error while enabling replication between source pod {} and destination pod {} , check logfile {}".format(source_pod,destination_pod,logfile)
+            alert_description = "Error while enabling replication between source pod {} " \
+                                "and destination pod {} , check logfile {}".format(source_pod,destination_pod,logfile)
             radarutil.raise_radar_alert(alert_source, alert_severity, alert_class, alert_key, alert_summary,alert_description)
             sys.exit(1)
         logger.info("Successfully enabled replication from source pod {} to destination pod {}".format(source_pod,destination_pod))
@@ -228,7 +355,8 @@ def main():
         database refresh by copying database from source to destination
         """
         # updating the status on desflow
-        update_current_running_status(source_pod, destination_pod, statuscode=3, comments='Replicating database {} from source pod {} to destination pod {}'.format(DBNAME,source_pod,destination_pod))
+        update_current_running_status(source_pod, destination_pod, statuscode=3,
+                                      comments='Replicating database {} from source pod {} to destination pod {}'.format(dbname,source_pod,destination_pod))
         status_message = "Refresh environment\n      Source: {}\n      Destination: {}\n" \
                  "Status: Replication Enabled and Replicating the database from source pod to destination pod. \n" \
                  "Please check the attached log file for further details".format(source_pod,destination_pod)
@@ -258,44 +386,45 @@ def main():
                  "Status: Taking backup of DDL statements for stages, tasks, pipes into table. \n" \
                  "Please check the attached log file for further details".format(source_pod,destination_pod)
         dbrefreshutil.update_current_running_refresh_status_on_desflow(status_message=status_message,files_to_attach=[logfile])
-        olddbname = str(dbname) + "_OLD"
-        command = "export SNOWSQL_PWD={};/g/dba/snowflake/bin/snowsql -a {} -d {} -u sa -w dba_wh -f /g/dba/snowflake/snowflake_refresh/3_backup_stages_pipes_tasks.sql -o quiet=true -o friendly=false -o header=false -s public -D DBNAME='{}' -o exit_on_error=true".format(destination_account_pwd,destination_host,olddbname,olddbname)
-        pipes = subprocess.Popen(command,stdout=subprocess.PIPE,stderr=subprocess.PIPE, shell=True)
-        output, err = pipes.communicate()
-        if pipes.returncode != 0 or output.strip() != 'SUCCESS':
-            logger.error("Failed to generage and store DDL commands for backup of stages, pipes, file formats and tasks output : {} error: {}".format(str(output),str(err)))
-            ## update the status of the failure on desflow and raise radar alert
+        return_code = backup_stages_pipes_tasks(destination_account, destination_pod, dbname)
+        if return_code != 0:
+            logger.error("Failed to generate and store DDL commands for backup of stages, pipes, file formats and tasks")
+            # update the status of the failure on desflow and raise radar alert
             status_message = "Refresh environment\n      Source: {}\n      Destination: {}\nStatus: Replicating Database." \
                  "Failed to backup DDL statements for stages, tasks, pipes into table. \n" \
                  "Please check the attached log file for further details".format(source_pod,destination_pod)
             dbrefreshutil.update_current_running_refresh_status_on_desflow(status_message=status_message,files_to_attach=[logfile])
             alert_description = "Failed to backup DDL statements for stages, tasks, pipes into table , check logfile {}".format(logfile)
             radarutil.raise_radar_alert(alert_source, alert_severity, alert_class, alert_key, alert_summary,alert_description)
-	    sys.exit(1)
+            sys.exit(1)
         logger.info("Successfully Generated DDL commands for taking backup of stages, tasks , pipes and file formats and stored in table")
-        # Generate DDL comands for taking backup of grants and privilages
-        logger.info("Generate DDL commands of users , roles , privilages and store in table")
-        ## Update the status on the desflow request
+        """
+        Snowflake replication do not handle the user permissions on objects, so permissions on objects need to be backup
+        and restore the permissions on destination pod
+        """
+        logger.info("Generate DDL commands of users , roles , privileges and store in table")
+        # Update the status on the desflow request
         update_current_running_status(source_pod, destination_pod, statuscode=5,comments='Taking backup of privilages into table')
         status_message = "Refresh environment\n      Source: {}\n      Destination: {}\n" \
                  "Status: Taking backup of DDL statements of privilages into table. \n" \
-                 "Please check the attached log file for further details".format(source_pod,destination_pod)
+                 "Please check the attached log file for further details".format(source_pod, destination_pod)
         dbrefreshutil.update_current_running_refresh_status_on_desflow(status_message=status_message,files_to_attach=[logfile])
-        command = "export SNOWSQL_PWD={};/g/dba/snowflake/bin/snowsql -a {} -d {} -u sa -w dba_wh -f /g/dba/snowflake/snowflake_refresh/4_backup_users_roles_permissions.sql -o quiet=true -o friendly=false -o header=false -s public -o exit_on_error=true".format(destination_account_pwd,destination_host,olddbname)
-        pipes = subprocess.Popen(command,stdout=subprocess.PIPE,stderr=subprocess.PIPE, shell=True)
-        output, err = pipes.communicate()
-        if pipes.returncode != 0 or output.strip() != 'SUCCESS':
-            logger.error("Failed to generage and store DDL commands for backup of users, roles and permissions. output : {} error: {}".format(str(output),str(err)))
-            ## update the status of the failure on desflow and raise radar alert
+        return_code = backup_users_roles_permissions(destination_account, destination_pod, dbname)
+        if return_code != 0:
+            logger.error("Failed to generate and store DDL commands for backup of users, roles and permissions")
+            # update the status of the failure on desflow and raise radar alert
             status_message = "Refresh environment\n      Source: {}\n      Destination: {}\nStatus:" \
                  "Failed to backup DDL statements of privialges into table. \n" \
                  "Please check the attached log file for further details".format(source_pod,destination_pod)
             dbrefreshutil.update_current_running_refresh_status_on_desflow(status_message=status_message,files_to_attach=[logfile])
-            alert_description = "Failed to backup  DDL statements of privilages into table , check logfile {}".format(logfile)
-            radarutil.raise_radar_alert(alert_source, alert_severity, alert_class, alert_key, alert_summary,alert_description)
+            alert_description = "Failed to backup  DDL statements of privileges into table , check logfile {}".format(logfile)
+            radarutil.raise_radar_alert(alert_source, alert_severity, alert_class, alert_key, alert_summary, alert_description)
             sys.exit(1)
         logger.info("Successfully Generated DDL commands for taking backup of users, roles , permissions and stored in table")
-        # Copy DDL statements from table to a file
+        """
+        Now all the ddl statements backup is completed. Now we need to rename the existing database to old and rename the 
+        replication database to old. After that restore the stages and other ddls into that database.
+        """
         # update the status on the Desflow
         update_current_running_status(source_pod, destination_pod, statuscode=6,comments='Create SQL file with DDL of privilages, stages etc')
         status_message = "Refresh environment\n      Source: {}\n      Destination: {}\n" \
@@ -303,70 +432,20 @@ def main():
                  "Please check the attached log file for further details".format(source_pod,destination_pod)
         dbrefreshutil.update_current_running_refresh_status_on_desflow(status_message=status_message,files_to_attach=[logfile])
         # status updated on desflow
-        statementsfile = '/g/dba/snowflake/snowflake_refresh/backup_statements_{}_{}.sql'.format(destination_pod,datetime.now().strftime("%d-%b-%Y-%H-%M-%S"))
-        logger.info("Copy DDL statements created in previous step to a file")
-	command = "export SNOWSQL_PWD={};/g/dba/snowflake/bin/snowsql -a {} -d {} -u sa -w dba_wh -f /g/dba/snowflake/snowflake_refresh/5_post_backup_stages_tasks_pipes.sql -o quiet=true -o friendly=false -o header=false -s public -D DBNAME='{}' -o exit_on_error=true -o output_file={} -o output_format=plain".format(destination_account_pwd,destination_host,olddbname,olddbname,statementsfile)
-        pipes = subprocess.Popen(command,stdout=subprocess.PIPE,stderr=subprocess.PIPE, shell=True)
-	output, err = pipes.communicate()
-	if pipes.returncode != 0:
-	    logger.error("Failed to copy DDL statements to file")
-            logger.error("Error : {}".format(str(err)))
+        return_code = restore_stages_pipes_tasks_permissions(destination_account, destination_pod, dbname)
+        if return_code != 0:
+            logger.error("Failed to restore the stages , pipes or permissions")
             status_message = "Refresh environment\n      Source: {}\n      Destination: {}\n" \
 		     "Status: Failed to Create SQL file with DDL of privilages, stages etc. \n" \
                      "Please check the attached log file for further details".format(source_pod,destination_pod)
             dbrefreshutil.update_current_running_refresh_status_on_desflow(status_message=status_message,files_to_attach=[logfile])
-            alert_description = "Failed to Create SQL file with DDL of privilages, stages etc. , check logfile {}".format(logfile)
+            alert_description = "Failed to restore the stages , pipes or permissions , check logfile {}".format(logfile)
             radarutil.raise_radar_alert(alert_source, alert_severity, alert_class, alert_key, alert_summary,alert_description)
-	    sys.exit(1)
-        logger.info("Copied DDL statements created in previous step to a file")
-	# Restore the objects
-	logger.info("Restore the stages, pipes and file formats created in previous step")
-        # update the status on desflow
-        update_current_running_status(source_pod, destination_pod, statuscode=7,comments='Restore stages and privilages')
-        status_message = "Refresh environment\n      Source: {}\n      Destination: {}\n" \
-                 "Status: Restore stages and privilages etc. \n" \
-                 "Please check the attached log file for further details".format(source_pod,destination_pod)
-        dbrefreshutil.update_current_running_refresh_status_on_desflow(status_message=status_message,files_to_attach=[logfile])
-        # status updated on desflow
-	command = "export SNOWSQL_PWD={};tail -n+2 {} | /g/dba/snowflake/bin/snowsql -a {} -d {} -u sa -w dba_wh -o quiet=true -o friendly=false -o header=false -s public -o exit_on_error=true".format(destination_account_pwd,statementsfile,destination_host,DBNAME)
-        pipes = subprocess.Popen(command,stdout=subprocess.PIPE,stderr=subprocess.PIPE, shell=True)
-	output, err = pipes.communicate()
-	if pipes.returncode != 0:
-	    logger.error("Failed to restore the objects")
-            logger.error("Error : {}".format(str(err)))
-            ## update the status of the failure on desflow and raise radar alert
-            status_message = "Refresh environment\n      Source: {}\n      Destination: {}\n" \
-		     "Status: Failed to Restore stages and privilages etc. \n" \
-                     "Please check the attached log file for further details".format(source_pod,destination_pod)
-            dbrefreshutil.update_current_running_refresh_status_on_desflow(status_message=status_message,files_to_attach=[logfile])
-            alert_description = "Restore stages and privilages etc. , check logfile {}".format(logfile)
-            radarutil.raise_radar_alert(alert_source, alert_severity, alert_class, alert_key, alert_summary,alert_description)
-	    sys.exit(1)
+            sys.exit(1)
         logger.info("Successfully restored stages, pipes and file formats created in previous step")
-	# Cleanup old databases
-	logger.info("Clean old databases created from replication and old uat database")
-        # update status on desflow
-        update_current_running_status(source_pod, destination_pod, statuscode=8,comments='Clean old databases')
-        status_message = "Refresh environment\n      Source: {}\n      Destination: {}\n" \
-                 "Status: Clean old databases etc. \n" \
-                 "Please check the attached log file for further details".format(source_pod,destination_pod)
-        dbrefreshutil.update_current_running_refresh_status_on_desflow(status_message=status_message,files_to_attach=[logfile])
-        # updated the status on desflow
-	command = "export SNOWSQL_PWD={};/g/dba/snowflake/bin/snowsql -a {} -d {} -u sa -w dba_wh -f /g/dba/snowflake/snowflake_refresh/6_cleanup.sql -o quiet=true -o friendly=false -o header=false -s public -o exit_on_error=true".format(destination_account_pwd,destination_host,DBNAME)
-        pipes = subprocess.Popen(command,stdout=subprocess.PIPE,stderr=subprocess.PIPE, shell=True)
-	output, err = pipes.communicate()
-	if pipes.returncode != 0:
-	    logger.error("Failed to clean old databases")
-            logger.error("Error : {}".format(str(err)))
-            ## update the status of the failure on desflow and raise radar alert
-            status_message = "Refresh environment\n      Source: {}\n      Destination: {}\n" \
-		         "Status: Failed to clean old databases etc. \n" \
-                         "Please check the attached log file for further details".format(source_pod,destination_pod)
-            dbrefreshutil.update_current_running_refresh_status_on_desflow(status_message=status_message,files_to_attach=[logfile])
-            alert_description = "Failed to clean old databases during snowflake refresh from {} to {} etc. , check logfile {}".format(source_pod,destination_pod,logfile)
-            radarutil.raise_radar_alert(alert_source, alert_severity, alert_class, alert_key, alert_summary,alert_description)
-	    sys.exit(1)
-        logger.info("Cleaned old databases! refresh completed successfully")
+        logger.info("Database refresh completed successfully for database {}".format(dbname))
+        # Cleanup old databases
+        # logger.info("Clean old databases created from replication and old uat database")
         update_current_running_status(source_pod, destination_pod, statuscode=8,comments='Refresh completed successfully')
         status_message = "Refresh environment\n      Source: {}\n      Destination: {}\n" \
              "Status: Refresh Completed successfully. \n" \
@@ -375,10 +454,10 @@ def main():
     except Exception as e:
         logger.error(e)
         traceback.print_exc()
-        ## update the status of the failure on desflow and raise radar alert
+        # update the status of the failure on desflow and raise radar alert
         status_message = "Refresh environment\n      Source: {}\n      Destination: {}\n" \
-		     "Status: Database refresh failed etc. \n" \
-                     "Please check the attached log file for further details".format(source_pod,destination_pod)
+                     "Status: Database refresh failed etc. \n" \
+                     "Please check the attached log file for further details".format(source_pod, destination_pod)
         dbrefreshutil.update_current_running_refresh_status_on_desflow(status_message=status_message,files_to_attach=[logfile])
         alert_description = "Failed to refresh database from {} to {} etc. , check logfile {}".format(source_pod,destination_pod,logfile)
         radarutil.raise_radar_alert(alert_source, alert_severity, alert_class, alert_key, alert_summary,alert_description)
