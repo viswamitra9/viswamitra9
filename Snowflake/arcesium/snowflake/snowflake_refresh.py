@@ -124,6 +124,11 @@ def check_enable_refresh(source_account, source_pod, destination_account, destin
     return 0
 
 
+def backup_stages_pipes_tasks(dbname):
+    """
+    This will take backup of pipes, stages, file formats and tasks.
+    """
+
 
 
 
