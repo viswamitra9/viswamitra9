@@ -6,10 +6,38 @@ import textwrap
 import argparse
 from datetime import datetime
 import sys
-import arcesium.snowflake.snowflakeutil as snowflakeutil
+sys.path.append('/g/dba/oguri/dba/snowflake')
+import snowflakeutil
+import logging
 
 logfile = '/g/dba/logs/snowflake/snowflake_database_backup_{}.log'.format(datetime.now().strftime("%d-%b-%Y-%H-%M-%S"))
-logger = ''
+logger = logging.getLogger()
+
+
+def raise_radar_alert(pod, dbname):
+    """
+    PURPOSE:
+        raise a radar alert when a database backup is failed
+    Returns:
+    """
+    from arcesium.radar.client import SendAlertRequest
+    from arcesium.radar.client import RadarService
+    request = SendAlertRequest()
+    request.alert_source = 'dba'
+    request.alert_class = 'Page'
+    request.alert_severity = 'CRITICAL',
+    request.alert_key = 'Snowflake database backup'
+    if dbname == 'none':
+        request.alert_summary = "Snowflake database backup from pod {} failed".format(pod)
+    else:
+        request.alert_summary = "Snowflake database {} backup from pod {} failed".format(dbname, pod)
+    request.alert_description = "Please check the documentation {} for more information.".format('http://wiki.ia55.net/display/TECHDOCS/Snowflake+Database+Backup+and+Recovery')
+    service = RadarService()
+    try:
+        logger.error(request.alert_description)
+        print(service.publish_alert(request, radar_domain='prod'))
+    except Exception as err:
+        logger.error("Error occurred while raising radar alert {}".format(str(err)))
 
 
 def backup_database(account, pod, dbname):
@@ -22,17 +50,13 @@ def backup_database(account, pod, dbname):
         dbname: name of database arcesium_data_warehouse or all
     """
     try:
+        cur_sql_dest, conn_sql_dest = snowflakeutil.sql_connect()
         logger.info("Creating DBA connection")
         dba_conn, dba_cur = snowflakeutil.get_admin_connection(account, pod)
         logger.info("Created super user connection")
         if dbname == 'all':
-            dba_cur.execute("show shares")
-            dba_cur.execute("select database_name from information_schema.databases where lower(database_name) "
-                            "not in ('audit_archive','demo_db','snowflake','snowflake_sample_data','util_db') and "
-                            "lower(database_name) not like 'backup_%' and database_name not in "
-                            "(SELECT \"database_name\" FROM "
-                            "TABLE(RESULT_SCAN(LAST_QUERY_ID())) where \"kind\"='INBOUND')")
-            result = dba_cur.fetchall()
+            cur_sql_dest.execute("select dbname from dbainfra.dbo.snowflake_db_refresh_inventory where lower(pod)='{}'".format(str(pod).lower()))
+            result = cur_sql_dest.fetchall()
             for db in result:
                 backup_name = "backup_{}_{}".format(db[0], datetime.now().strftime("%d%b%Y"))
                 dba_cur.execute("create database if not exists {} clone {}".format(backup_name, db[0]))
@@ -43,11 +67,11 @@ def backup_database(account, pod, dbname):
             if result[0][0] == 0:
                 logger.error("Database {} does not exists in pod {}".format(dbname, pod))
                 raise Exception("Database {} does not exists in pod {}".format(dbname, pod))
-                exit(1)
             backup_name = "backup_{}_{}".format(dbname, datetime.now().strftime("%d%b%Y"))
             dba_cur.execute("create database if not exists {} clone {}".format(backup_name, dbname))
             logger.info("Backup {} created successfully for database {} in pod {}".format(backup_name, dbname, pod))
     except Exception as e:
+        raise_radar_alert(pod, dbname)
         raise Exception("Failed to take backup of database in pod {} with error : {}".format(pod, str(e)))
 
 
@@ -84,12 +108,6 @@ def main():
 
     instances = {}
     try:
-        # Alert details
-        alert_source = "dba"
-        alert_class = "Page"
-        alert_severity = "CRITICAL",
-        alert_key = "Snowflake database backup"
-        alert_summary = "Snowflake database backup in pod {}".format(pod)
         # create SQL connection to get information about instances
         cur_sql_dest, conn_sql_dest = snowflakeutil.sql_connect()
         if args.pod:
@@ -116,9 +134,9 @@ def main():
             logger.info("Taking backup of database in pod {}".format(pod))
             backup_database(account, pod, dbname)
     except Exception as e:
-        alert_description = "Failed to take database {} backup from pod {}, check logfile {}".format(dbname, pod,logfile)
-        #radarutil.raise_radar_alert(alert_source, alert_severity, alert_class, alert_key, alert_summary,alert_description)
-        sys.exit(1)
+        raise_radar_alert(pod,dbname='none')
+        logger.error("Failed to take database backup from pod {}, check logfile {}".format(pod, logfile))
+        raise Exception("Failed to take database backup from pod {}, check logfile {}".format(pod, logfile))
 
 
 if __name__ == "__main__":

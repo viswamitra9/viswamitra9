@@ -3,16 +3,20 @@ owner       : oguri
 Description : This is to refresh the Snowflake databases from source to destination account
 """
 import sys
-sys.path.append('/g/dba/oguri/dba/snowflake/')
+sys.path.append('/g/dba/snowflake/')
 import argparse
 from datetime import datetime
 import traceback
 import snowflakeutil
 import logging
-#from radarutil import RadarUtil
-#radarutil=RadarUtil()
 
 logger = logging.getLogger('snowflake_refresh')
+
+# variables for radar aler
+alert_source    = "dba"
+alert_class     = "Page"
+alert_severity  = "CRITICAL",
+alert_key       = "Snowflake refresh"
 
 
 def parse_arguments():
@@ -381,12 +385,18 @@ def restore_stages_permissions(destination_account, destination_pod, dbname):
 
 
 def main():
+    args = parse_arguments()
+    # Get the input arguments
+    source_pod      = args.source_pod
+    destination_pod = args.destination_pod
+    dbname          = args.dbname
+
     try:
-        args = parse_arguments()
-        # Get the input arguments
-        source_pod      = args.source_pod
-        destination_pod = args.destination_pod
-        dbname          = args.dbname
+        # Enable logging
+        logfile = '/g/dba/logs/dbrefresh/snowflakerefresh_{}_{}_{}.log'.format(source_pod, destination_pod,
+                                                                               datetime.now().strftime("%d-%b-%Y-%H-%M-%S"))
+        global logger
+        logger = snowflakeutil.setup_logging(logfile=logfile)
 
         # Get account details and host information
         cur_sql_dest, conn_sql_dest = snowflakeutil.sql_connect()
@@ -401,22 +411,14 @@ def main():
         destination_account = row[0]
         destination_env     = row[1]
 
+        cur_sql_dest.execute("select archelpnumber from dbainfra.dbo.refresh_desflow_ticket_details")
+        arc_techops_number = cur_sql_dest.fetchone()[0]
+
         # Creating connections to the source and destination accounts
         destination_connection, destination_cursor = snowflakeutil.get_admin_connection(destination_account, destination_pod)
         source_connection, source_cursor           = snowflakeutil.get_admin_connection(source_account, source_pod)
 
-        # Variables for radar alerts
-        alert_source    = "dba"
-        alert_class     = "Page"
-        alert_severity  = "CRITICAL",
-        alert_key       = "Snowflake refresh"
         alert_summary   = "Snowflake Refresh" + source_pod + " to " + destination_pod
-
-        # Enable logging
-        logfile = '/g/dba/logs/dbrefresh/snowflakerefresh_{}_{}_{}.log'.format(source_pod, destination_pod,
-                                                                               datetime.now().strftime("%d-%b-%Y-%H-%M-%S"))
-        global logger
-        logger = snowflakeutil.setup_logging(logfile=logfile)
         """
         if the destination environment is prod we should not proceed with refresh
         """
@@ -491,8 +493,9 @@ def main():
                  "Failed to backup DDL statements of privialges into table. \n" \
                  "Please check the attached log file for further details".format(source_pod,destination_pod)
             update_current_running_refresh_status_on_desflow(status_message=status_message,files_to_attach=[logfile])
-            alert_description = "Failed to backup  DDL statements of privileges into table , check logfile {}".format(logfile)
-            #radarutil.raise_radar_alert(alert_source, alert_severity, alert_class, alert_key, alert_summary, alert_description)
+            alert_description = "Failed to backup  DDL statements of privileges into table , " \
+                                "check logfile {}, WIKI for automation is : http://wiki.ia55.net/display/TECHDOCS/Snowflake+Database+Refresh+Automation".format(logfile)
+            snowflakeutil.raise_radar_alert(alert_source, alert_severity, alert_class, alert_key, alert_summary, alert_description)
             sys.exit(1)
         logger.info("Successfully Generated DDL commands for taking backup of users, roles , permissions and stored in table")
         """
@@ -505,7 +508,7 @@ def main():
             databases.append(args.dbname)
         if args.dbname == 'none':
             cur_sql_dest.execute("select dbname from dbainfra.dbo.snowflake_db_refresh_inventory "
-                                 "where pod='{}' and excluded=0".format(str(destination_pod).lower()))
+                                 "where pod='{}' and excluded=0".format(str(source_pod).lower()))
             result = cur_sql_dest.fetchall()
             if len(result) > 0:
                 for i in result:
@@ -517,8 +520,9 @@ def main():
                                  "There are no databases to refresh for source and destination pods in table snowflake_db_refresh_inventory. \n" \
                                  "Please check the attached log file for further details".format(source_pod,destination_pod,dbname)
                 update_current_running_refresh_status_on_desflow(status_message=status_message,files_to_attach=[logfile])
-                alert_description = "Failed to backup DDL statements for stages into table , check logfile {}".format(logfile)
-                # radarutil.raise_radar_alert(alert_source, alert_severity, alert_class, alert_key, alert_summary,alert_description)
+                alert_description = "Failed to backup DDL statements for stages into table , " \
+                                    "check logfile {}, WIKI for automation is : http://wiki.ia55.net/display/TECHDOCS/Snowflake+Database+Refresh+Automation".format(logfile)
+                snowflakeutil.raise_radar_alert(alert_source, alert_severity, alert_class, alert_key, alert_summary,alert_description)
                 sys.exit(1)
         logger.info("List of databases to be refreshed from source pod {} to destination pod {} are {}".format(source_pod, destination_pod, databases))
 
@@ -544,8 +548,9 @@ def main():
                  "Please check the attached log file for further details".format(source_pod,destination_pod,dbname)
                 update_current_running_refresh_status_on_desflow(status_message=status_message,files_to_attach=[logfile])
                 alert_description = "Error while enabling replication between source pod {} " \
-                                "and destination pod {} for database {}, check logfile {}".format(source_pod,destination_pod,dbname,logfile)
-                # radarutil.raise_radar_alert(alert_source, alert_severity, alert_class, alert_key, alert_summary,alert_description)
+                                "and destination pod {} for database {}, check logfile {}, " \
+                                "WIKI for automation is : http://wiki.ia55.net/display/TECHDOCS/Snowflake+Database+Refresh+Automation".format(source_pod,destination_pod,dbname,logfile)
+                snowflakeutil.raise_radar_alert(alert_source, alert_severity, alert_class, alert_key, alert_summary,alert_description)
                 sys.exit(1)
             logger.info("Successfully enabled replication from source pod {} "
                         "to destination pod {} for database {}".format(source_pod,destination_pod,dbname))
@@ -574,8 +579,8 @@ def main():
                      "Please check the attached log file for further details".format(source_pod,destination_pod,dbname)
                 update_current_running_refresh_status_on_desflow(status_message=status_message,files_to_attach=[logfile])
                 alert_description = "Error while replicating database {} between " \
-                                    "source pod {} and destination pod {} , check logfile {}".format(dbname,source_pod,destination_pod,logfile)
-                #radarutil.raise_radar_alert(alert_source, alert_severity, alert_class, alert_key, alert_summary,alert_description)
+                                    "source pod {} and destination pod {} , check logfile {}, WIKI for automation is : http://wiki.ia55.net/display/TECHDOCS/Snowflake+Database+Refresh+Automation".format(dbname,source_pod,destination_pod,logfile)
+                snowflakeutil.raise_radar_alert(alert_source, alert_severity, alert_class, alert_key, alert_summary,alert_description)
                 sys.exit(1)
             logger.info("Successfully replicated database {} from source pod {} to destination pod {}".format(dbname, source_pod, destination_pod))
             """
@@ -597,8 +602,8 @@ def main():
                      "Failed to backup stages in database {}. \n" \
                      "Please check the attached log file for further details".format(source_pod,destination_pod,dbname)
                 update_current_running_refresh_status_on_desflow(status_message=status_message,files_to_attach=[logfile])
-                alert_description = "Failed to backup DDL statements for stages into table , check logfile {}".format(logfile)
-                #radarutil.raise_radar_alert(alert_source, alert_severity, alert_class, alert_key, alert_summary,alert_description)
+                alert_description = "Failed to backup DDL statements for stages into table , check logfile {}, WIKI for automation is : http://wiki.ia55.net/display/TECHDOCS/Snowflake+Database+Refresh+Automation".format(logfile)
+                snowflakeutil.raise_radar_alert(alert_source, alert_severity, alert_class, alert_key, alert_summary,alert_description)
                 sys.exit(1)
             logger.info("Successfully Generated DDL commands for taking backup of stages, file formats and stored in table")
             """
@@ -606,8 +611,11 @@ def main():
             replication database to actual. After that restore the stages and other ddls into that database.
             """
             # Rename the existing database to old and clone to actual database
-            destination_cursor.execute("alter database IF EXISTS {} rename to {}_old".format(dbname, dbname))
+            destination_cursor.execute("alter database IF EXISTS {} rename to {}_{}".format(dbname, dbname,arc_techops_number))
             destination_cursor.execute("alter database IF EXISTS {}_clone_{} rename to {}".format(source_pod,dbname, dbname))
+            # Make an entry into the table to remove them after two days
+            cur_sql_dest.execute("insert into dbainfra.dbo.snowflake_old_databases(accountname,pod,dbname,deleted)"
+                                 "('{}','{}','{}_{}',0)".format(destination_account, destination_pod,dbname,arc_techops_number))
 
         # update the status on the Desflow
         update_current_running_status(source_pod, destination_pod, statuscode=6,comments='Restoring stages, permissions')
@@ -623,28 +631,30 @@ def main():
              "Status: Failed to Create SQL file with DDL of privilages, stages etc. \n" \
                      "Please check the attached log file for further details".format(source_pod,destination_pod)
             update_current_running_refresh_status_on_desflow(status_message=status_message,files_to_attach=[logfile])
-            alert_description = "Failed to restore the stages or permissions , check logfile {}".format(logfile)
-            # radarutil.raise_radar_alert(alert_source, alert_severity, alert_class, alert_key, alert_summary,alert_description)
+            alert_description = "Failed to restore the stages or permissions , check logfile {}, WIKI for automation is : http://wiki.ia55.net/display/TECHDOCS/Snowflake+Database+Refresh+Automation".format(logfile)
+            snowflakeutil.raise_radar_alert(alert_source, alert_severity, alert_class, alert_key, alert_summary,alert_description)
             sys.exit(1)
         logger.info("Successfully restored stages, file formats created in previous step")
         logger.info("Database refresh completed successfully for database {}".format(dbname))
-        # Cleanup old databases
-        # logger.info("Clean old databases created from replication and old uat database")
         update_current_running_status(source_pod, destination_pod, statuscode=8,comments='Refresh completed successfully')
         status_message = "Refresh environment\n      Source: {}\n      Destination: {}\n" \
              "Status: Refresh Completed successfully. \n" \
              "Please check the attached log file for further details".format(source_pod,destination_pod)
         update_current_running_refresh_status_on_desflow(status_message=status_message,files_to_attach=[logfile])
     except Exception as e:
-        logger.error("error occurred while performing refresh from source pod {} to destination pod {} with error {}".format(source_pod, destination_pod, str(e)))
+        alert_summary   = "Snowflake Refresh" + source_pod + " to " + destination_pod
+        logger.error("error occurred while performing refresh from source pod {} to "
+                     "destination pod {} with error {}".format(source_pod, destination_pod, str(e)))
         traceback.print_exc()
         # update the status of the failure on desflow and raise radar alert
         status_message = "Refresh environment\n      Source: {}\n      Destination: {}\n" \
                      "Status: Database refresh failed etc. \n" \
                      "Please check the attached log file for further details".format(source_pod, destination_pod)
         update_current_running_refresh_status_on_desflow(status_message=status_message,files_to_attach=[logfile])
-        alert_description = "Failed to refresh database from {} to {} etc. , check logfile {}".format(source_pod,destination_pod,logfile)
-        #radarutil.raise_radar_alert(alert_source, alert_severity, alert_class, alert_key, alert_summary,alert_description)
+        alert_description = "Failed to refresh database from {} to {} etc. , " \
+                            "check logfile {}, WIKI for automation " \
+                            "is : http://wiki.ia55.net/display/TECHDOCS/Snowflake+Database+Refresh+Automation".format(source_pod,destination_pod,logfile)
+        snowflakeutil.raise_radar_alert(alert_source, alert_severity, alert_class, alert_key, alert_summary,alert_description)
         sys.exit(1)
 
 
