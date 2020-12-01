@@ -1,4 +1,3 @@
-#!/usr/bin/env python
 import random, time
 import string
 import sys
@@ -169,17 +168,18 @@ def main():
     command = "pstree -lu -s $$ | grep --max-count=1 -o '([^)]*)' | head -n 1 | tr -d '()'"
     process = subprocess.Popen(command, shell=True, stdout=PIPE, stderr=PIPE)
     stdout, stderr = process.communicate()
-    logged_in_user = str(stdout).rstrip("\n\r") + "_sa"
+    # logged_in_user = str(stdout).rstrip("\n\r") + "_sa"
+    logged_in_user = str(stdout,'utf-8').rstrip("\n\r") + "_sa"
 
     if env == 'ALL':
         query = "select pod,Alias as instancename,lower(host) as host from  dbainfra.dbo.database_server_inventory " \
-                "where ServerType='PGDB' and pod!='TEST' and Alias is not null"
+                "where ServerType='PGDB' and pod!='TEST' and Alias is not null and IsActive=1"
     elif srv:
         query = "select pod,Alias as instancename,lower(host) as host from  dbainfra.dbo.database_server_inventory " \
-                "where ServerType='PGDB' and pod!='TEST' and Alias =('" + str(srv).lower() + "')"
+                "where ServerType='PGDB' and IsActive=1 and pod!='TEST' and Alias =('" + str(srv).lower() + "')"
     else:
         query = "select pod,Alias as instancename,lower(host) as host from  dbainfra.dbo.database_server_inventory " \
-                "where ServerType='PGDB' and pod!='TEST' and Alias is not null and upper(Env) in ('{}')".format(env)
+                "where ServerType='PGDB' and IsActive=1 and pod!='TEST' and Alias is not null and upper(Env) in ('{}')".format(env)
 
     cur_sql_dest, conn_sql_dest = sql_connect()
     cur_sql_dest.execute(query)

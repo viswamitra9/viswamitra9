@@ -7,6 +7,8 @@ import sys
 sys.path.append('/g/dba/snowflake')
 import snowflakeutil
 import logging
+import textwrap
+import argparse
 
 logfile = '/g/dba/logs/snowflake/snowflake_delete_refresh_databases_{}.log'.format(datetime.now().strftime("%d-%b-%Y-%H-%M-%S"))
 logger = logging.getLogger()
@@ -64,6 +66,8 @@ def delete_old_refresh_databases():
                 dbname = db[0]
                 dba_cur.execute("drop database if exists {}".format(dbname))
                 logger.info("dropped database {} from pod {}".format(dbname, pod))
+                cur_sql_dest.execute("update dbainfra.dbo.snowflake_old_databases "
+                                     "set deleted=1 where pod='{}' and accountname='{}' and dbname='{}'".format(pod, accountname, dbname))
         return 0
     except Exception as e:
         alert_description = "failed to delete the databases, please check logfile".format(logfile)
@@ -72,7 +76,20 @@ def delete_old_refresh_databases():
         sys.exit(1)
 
 
+# parse the input arguments
+def parse_arguments():
+    # take input arguments and parse
+    parser = argparse.ArgumentParser(add_help=True, formatter_class=argparse.RawDescriptionHelpFormatter,
+                                     description=textwrap.dedent('''\
+    example :
+    sudo -u sqlexec python snowflake_delete_refresh_databases.py
+    '''))
+    return parser.parse_args()
+
+
 def main():
+    args   = parse_arguments()
+
     # implement logging
     global logger
     logger = snowflakeutil.setup_logging(logfile=logfile)
