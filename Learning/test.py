@@ -1,5 +1,6 @@
-def test(var):
-    var = var.upper()
-    print(var)
+def test():
+    t = 1
+    if t == 1:
+        raise
 
-test(str('test'))
+test()
