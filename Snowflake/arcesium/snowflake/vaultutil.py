@@ -37,7 +37,7 @@ def get_user_password(vaultpath):
 def write_secret_to_vault(vaultpath,secret):
     try:
         vaultpath_req = "http://vault.ia55.net/v1"+vaultpath
-        response = requests.post(vaultpath_req, auth=HTTPKerberosAuth(), data=json.dumps({'secret': secret}))
+        response = requests.post(vaultpath_req, auth=HTTPKerberosAuth(), json={'secret': secret})
         if response:
             logging.info("Credentials written successfully to {}".format(vaultpath))
         else:

@@ -8,6 +8,7 @@ from email.mime.base import MIMEBase
 import os
 import email.encoders as Encoders
 import smtplib
+import pdb
 
 import snowflake.connector
 from snowflake.connector.secret_detector import SecretDetector
@@ -15,7 +16,7 @@ import random
 import logging
 import json
 import sys
-sys.path.append('/g/dba/oguri/dba/snowflake')
+sys.path.append('/g/dba/snowflake')
 import pyodbc
 import time
 import datetime
@@ -47,7 +48,7 @@ APP_STATEMENT_TIMEOUT = 900
 DB_WAIT_TIME     = 60
 DB_RETRY_COUNT   = 5
 # hosts for network policy
-ALLOWED_HOSTS    = "'125.18.12.160/28', '115.112.81.240/28','10.12.0.0/17','149.77.95.64/29'"
+ALLOWED_HOSTS    = "'125.18.12.160/28', '115.112.81.240/28','10.12.0.0/17','149.77.95.64/29','100.64.0.0/17'"
 RESTRICTED_HOSTS = "'54.172.224.181','54.174.16.130'"
 # warehouse usage alerting
 DEFAULT_WAREHOUSE_CREDIT_LIMIT = 100
@@ -84,25 +85,21 @@ def setup_logging(logfile):
     return logger
 
 
-def raise_radar_alert(alert_description):
+def raise_radar_alert(alert_source, alert_severity, alert_class, alert_key, alert_summary,alert_description):
     """
     PURPOSE:
-        raise a radar alert
-    Args:
-        alert_description:
+        raise a radar alert when a database backup is failed
     Returns:
     """
+    from arcesium.radar.client import SendAlertRequest
+    from arcesium.radar.client import RadarService
     request = SendAlertRequest()
-    request.alert_source      = 'dba'
-    request.alert_key         = 'Snowflake_Account_Monitoring'
-    request.alert_summary     = 'Error occurred while accessing Snowflake Account'
-    request.alert_class       = 'PAGE'
-    request.alert_description = alert_description + " Please check the documentation for more " \
-                                "information.".format('http://wiki.ia55.net/pages/'
-                                                      'viewpage.action?spaceKey=TECHDOCS&title=Snowflake+Monitoring')
-    request.alert_severity    = 'CRITICAL'
-    request.alertKB           = 'http://wiki.ia55.net/pages/viewpage.action?spaceKey=TECHDOCS&title=Snowflake+Monitoring'
-
+    request.alert_source = alert_source
+    request.alert_class = alert_class
+    request.alert_severity = alert_severity
+    request.alert_key = alert_key
+    request.alert_summary = alert_summary
+    request.alert_description = alert_description
     service = RadarService()
     try:
         logger.error(request.alert_description)
@@ -132,7 +129,7 @@ def sql_connect():
             retry_count += 1
             time.sleep(DB_WAIT_TIME)
             logger.info("trying again to connect to DBMONITOR, re-try count : {}".format(retry_count))
-            raise Exception("Error while creating database connection to DBMONITOR server {}".format(str(e)))
+    raise Exception("Error while creating database connection to DBMONITOR server {}".format(str(e)))
 
 
 def get_snowflake_connection(account, username, password):
@@ -369,16 +366,18 @@ def create_user(account, username, pod, user_type, user_mail, logfile, dbname='a
         vaultpath = APP_VAULT.replace("$POD", pod).replace("$APPNAME", kwargs['appname']) \
             .replace("$DBNAME", dbname).replace("$USERNAME", username)
         cname = "{}.snowflakecomputing.com".format(account)
-        secret = json.dumps({'cname': cname, 'account': account, 'password': password, 'database': dbname})
-        vaultutil.write_secret_to_vault(vaultpath, secret)
+        secret = {'cname': cname, 'account': account, 'password': password, 'database': dbname}
+        pdb.set_trace()
+        print(secret)
+        vaultutil.write_secret_to_vault(vaultpath,json.dumps(secret))
         sql_cur.execute("insert into dbainfra.dbo.snowflake_users "
                     "(username, usertype, appname, user_mail, vaultpath, pod) values ('{}', '{}', '{}', "
                     "'{}', '{}', '{}')".format(username, user_type, kwargs['appname'], user_mail, vaultpath,pod))
     else:
         vaultpath = OTHER_VAULT.replace("$POD", pod).replace("$USERNAME", username)
         cname = "{}.snowflakecomputing.com".format(account)
-        secret = json.dumps({'cname': cname, 'account': account, 'password': password, 'database': dbname})
-        vaultutil.write_secret_to_vault(vaultpath, secret)
+        secret = {'cname': cname, 'account': account, 'password': password, 'database': dbname}
+        vaultutil.write_secret_to_vault(vaultpath,json.dumps(secret))
         if user_type == 'temporary':
             sql_cur.execute(
                 "insert into dbainfra.dbo.snowflake_users (username, usertype, user_retention, user_mail, "
@@ -477,8 +476,8 @@ def reset_user_password(account, username, pod):
             logger.info("writing user {} password to vault path {}".format(username, vaultpath))
             cname     = "{}.snowflakecomputing.com".format(account)
             dbname    = json.loads(vaultutil.get_user_password(vaultpath))['database']
-            secret    = json.dumps({'cname': cname, 'account': account, 'password': password, 'database': dbname})
-            vaultutil.write_secret_to_vault(vaultpath, secret)
+            secret    = {'cname': cname, 'account': account, 'password': password, 'database': dbname}
+            vaultutil.write_secret_to_vault(vaultpath, json.dumps(secret))
             logger.info("Successfully wrote user {} password to vault path {}".format(username, vaultpath))
             # Send mail notification to the user
             logger.info("Sending email to the user about password reset")
@@ -592,9 +591,9 @@ def prepare_account(account, region, env, pod):
         # write password to vault
         vaultpath = "/secret/v2/snowflake/{}/db/sa".format(pod)
         cname     = "{}.{}.privatelink.snowflakecomputing.com".format(account, region)
-        secret    = json.dumps({'cname': cname, 'account': "{}.{}.privatelink".format(account, region),
-                                'password': password, 'database': 'audit_archive'})
-        vaultutil.write_secret_to_vault(vaultpath, secret)
+        secret    = {'cname': cname, 'account': "{}.{}.privatelink".format(account, region),
+                                'password': password, 'database': 'audit_archive'}
+        vaultutil.write_secret_to_vault(vaultpath, json.dumps(secret))
         # Set default parameters for account
         cursor.execute("alter account set PERIODIC_DATA_REKEYING = TRUE")
         cursor.execute("alter account set lock_timeout = {}".format(APP_LOCK_TIMEOUT))
@@ -610,7 +609,7 @@ def prepare_account(account, region, env, pod):
                 " where FriendlyName='{}'".format("{}.{}.privatelink".format(account, region))
         cur_sql_dest.execute(query)
         result = cur_sql_dest.fetchall()
-        if result is None:
+        if len(result) == 0:
             query = "insert into dbainfra.dbo.database_server_inventory " \
                 "(Tier,Dataserver,Env,Host,IsActive,Monitor,ServerType,FriendlyName,Pod,ClientDbState) " \
                 "values('{}','{}','{}','{}','{}','{}','{}','{}','{}','{}')".\
@@ -992,7 +991,7 @@ def extend_user_retention(account, pod,  username, retention):
     connection.close()
 
 
-def grant_additional_permissions(account, pod, username, permission_type, **kwargs):
+def grant_additional_permissions(account, pod, username, permission_type, user_type, **kwargs):
     """
     PURPOSE:
         To grant additional permissions to the existing user.
@@ -1010,7 +1009,8 @@ def grant_additional_permissions(account, pod, username, permission_type, **kwar
     Returns:
     """
     permissions = ['warehouse_owner', 'monitoring_owner', 'database_owner', 'database_reader','share_owner']
-    assert permission_type in permissions , "permission type should be in  {}".format(permissions)
+    assert permission_type in permissions , "permissions should be in  {}".format(permissions)
+    assert user_type in USER_TYPE, "usertype should be anyone of {}".format(USER_TYPE)
     # create database connection
     logger.info("Granting additional permissions {} to user {}".format(permission_type, username))
     connection, cursor = get_admin_connection(account=account, pod=pod)
@@ -1022,9 +1022,8 @@ def grant_additional_permissions(account, pod, username, permission_type, **kwar
         db_owner  = "{}_owner".format(dbname)
         db_reader = "{}_reader".format(dbname)
         if permission_type == 'database_owner':
-            assert kwargs['user_type'] in USER_TYPE, "usertype should be anyone of {}".format(USER_TYPE)
             cursor.execute("grant role {} to role {}".format(db_owner, user_role))
-            if kwargs['user_type'] == 'app':
+            if user_type == 'app':
                 cur_sql_dest, conn_sql_dest = sql_connect()
                 cur_sql_dest.execute("select TOP 1 vaultpath,appname from dbainfra.dbo.snowflake_users "
                                      "where username='{}' and pod = '{}' and usertype='app'".format(username,pod))
@@ -1040,10 +1039,11 @@ def grant_additional_permissions(account, pod, username, permission_type, **kwar
                 vaultpath = APP_VAULT.replace("$POD", pod).replace("$APPNAME", appname).replace("$DBNAME",
                                                                             dbname).replace("$USERNAME", username)
                 cname = "{}.snowflakecomputing.com".format(account)
-                secret = json.dumps({'cname': cname, 'account': account, 'password': password, 'database': dbname})
-                logger.info("Writing credentials of user {} to vault path {}".format(username, vaultpath))
-                vaultutil.write_secret_to_vault(vaultpath, secret)
+                secret = {'cname': cname, 'account': account, 'password': password, 'database': dbname}
+                vaultutil.write_secret_to_vault(vaultpath, json.dumps(secret))
+                logger.info("Permission {} granted to user {} successfully".format(db_owner,username))
                 logger.info("Wrote credentials of user {} to vault path {} successfully".format(username, vaultpath))
+                conn_sql_dest.close()
         if permission_type == 'database_reader':
             cursor.execute("grant role {} to role {}".format(db_reader, user_role))
     else:
@@ -1256,6 +1256,7 @@ def snowflake_cost_utilization_report():
        This function get the last 6 months of resource utilization and send a report of that.
     Returns:
     """
+    TAX_PCT = 8.87
     report = '/g/dba/logs/snowflake/cost_report.html'
     fh = open(report, 'w')
     # get the last 6 months as header row
@@ -1313,10 +1314,10 @@ def snowflake_cost_utilization_report():
                        "where USAGE_DATE between to_timestamp(date_trunc('MONTH', dateadd(month,-6,current_timestamp))) "
                        "and to_timestamp(date_trunc('MONTH', current_timestamp))  group by 1) "
                        "select months.month||'_'||months.year as month, '$' as unit,"
-                       "coalesce(ROUND((WAREHOUSE.cost + STORAGE.cost),0),0) as cost "
+                       "(coalesce(ROUND((WAREHOUSE.cost + STORAGE.cost),0),0) + coalesce(ROUND((WAREHOUSE.cost + STORAGE.cost) * ({}/100),0),0)) as cost "
                        "from WAREHOUSE join STORAGE on (WAREHOUSE.month=STORAGE.month) right join months on "
                        "(months.month=MONTH(WAREHOUSE.month) and months.year=YEAR(WAREHOUSE.month)) "
-                       "order by months.year,months.month")
+                       "order by months.year,months.month".format(TAX_PCT))
         result = cursor.fetchall()
         file_content += "<tr> <td> {} </td> ".format(sql_result[0])
         file_content += " <td> {} </td> ".format(sql_result[1])
@@ -1331,8 +1332,9 @@ def snowflake_cost_utilization_report():
     file_content += "</tr>"
     file_content += """
      </table>
+     <p style="color:blue">COST is including {}% of tax.</p>
      </body>
-     </html>"""
+     </html>""".format(TAX_PCT)
     fh.write(file_content)
     fh.close()
     sub = "COST Report of Snowflake accounts for last 6 months"
