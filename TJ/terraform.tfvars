@@ -1,0 +1,15 @@
+athena_s3 = "s3://archivetestcslifesci/request2/"
+aws_athena_database = lsdw_poc_athena
+kms_key_arn = ''
+tags = {Name : lsdw_poc, Environment : dev}
+glue_s3 = "s3://oa-ls-lsdw-dataq"
+Environment = "nprd"
+account_id = 526621796011
+redshift_cluster_size = "dc2.large"
+redshift_number_nodes = 2
+redshift_iam_roles = ["arn:aws:iam::526621796011:role/RedshiftSpectrum"]
+redshift_database_name = "dev"
+redshift_user = "awsuser"
+glu_iam_role = "arn:aws:iam:526621796011:role/service-role/AWSGlueServiceRole-DefaultRole"
+glu_etl_script = "s3://ls-lsdw-glue-scripts/sparkjob.py"
+redshift_vpc_securitygroups = ["default"]

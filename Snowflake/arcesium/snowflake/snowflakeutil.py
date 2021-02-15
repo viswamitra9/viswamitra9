@@ -27,8 +27,8 @@ from tabulate import tabulate
 import vaultutil
 
 # packages for radar alert
-#from arcesium.radar.client import SendAlertRequest
-#from arcesium.radar.client import RadarService
+from arcesium.radar.client import SendAlertRequest
+from arcesium.radar.client import RadarService
 
 
 logger = logging.getLogger()
