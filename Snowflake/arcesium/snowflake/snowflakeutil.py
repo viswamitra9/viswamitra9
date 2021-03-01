@@ -8,7 +8,6 @@ from email.mime.base import MIMEBase
 import os
 import email.encoders as Encoders
 import smtplib
-import pdb
 
 import snowflake.connector
 from snowflake.connector.secret_detector import SecretDetector
@@ -48,7 +47,7 @@ APP_STATEMENT_TIMEOUT = 900
 DB_WAIT_TIME     = 60
 DB_RETRY_COUNT   = 5
 # hosts for network policy
-ALLOWED_HOSTS    = "'125.18.12.160/28', '115.112.81.240/28','10.12.0.0/17','149.77.95.64/29','100.64.0.0/17'"
+ALLOWED_HOSTS    = "'125.18.12.160/28', '115.112.81.240/28','10.12.0.0/17','149.77.95.64/29','100.64.0.0/17','100.80.0.0/19','10.12.152.0/21','149.77.95.16/26'"
 RESTRICTED_HOSTS = "'54.172.224.181','54.174.16.130'"
 # warehouse usage alerting
 DEFAULT_WAREHOUSE_CREDIT_LIMIT = 100
@@ -367,8 +366,8 @@ def create_user(account, username, pod, user_type, user_mail, logfile, dbname='a
             .replace("$DBNAME", dbname).replace("$USERNAME", username)
         cname = "{}.snowflakecomputing.com".format(account)
         secret = {'cname': cname, 'account': account, 'password': password, 'database': dbname}
-        pdb.set_trace()
-        print(secret)
+        #pdb.set_trace()
+        #print(secret)
         vaultutil.write_secret_to_vault(vaultpath,json.dumps(secret))
         sql_cur.execute("insert into dbainfra.dbo.snowflake_users "
                     "(username, usertype, appname, user_mail, vaultpath, pod) values ('{}', '{}', '{}', "

@@ -1,6 +1,9 @@
-def test():
-    t = 1
-    if t == 1:
-        raise
+def test(A):
+    if min(A) < -1000000 or min(A) > 1000000:
+        raise Exception("Range out of value")
+    start = min(A)+1
+    while(start in A):
+        start = start + 1
+    print(start)
 
-test()
+test([-1,2,3])

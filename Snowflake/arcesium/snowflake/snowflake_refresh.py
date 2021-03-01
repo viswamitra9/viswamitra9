@@ -453,11 +453,11 @@ def main():
         rename_step = destination_cursor.execute("select count(*) from audit_archive.public.refresh_status "
                                                  "where request_number='{}' and "
                                                  "step_name='rename_database'".format(arc_techops_number)).fetchone()[0]
-        if rename_step != 0:
-            logger.error("If the database rename step is failed, you should not re-run the script. Please check"
-                         "http://wiki.ia55.net/display/TECHDOCS/Snowflake+Database+Refresh+Automation")
-            raise Exception("If the database rename step is failed, you should not re-run the script. Please check"
-                            "http://wiki.ia55.net/display/TECHDOCS/Snowflake+Database+Refresh+Automation")
+        #if rename_step != 0:
+        #    logger.error("If the database rename step is failed, you should not re-run the script. Please check"
+        #                 "http://wiki.ia55.net/display/TECHDOCS/Snowflake+Database+Refresh+Automation")
+            #raise Exception("If the database rename step is failed, you should not re-run the script. Please check"
+            #                "http://wiki.ia55.net/display/TECHDOCS/Snowflake+Database+Refresh+Automation")
 
         alert_summary   = "Snowflake Refresh" + source_pod + " to " + destination_pod
         """

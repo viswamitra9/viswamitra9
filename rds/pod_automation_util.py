@@ -962,7 +962,7 @@ def verify_user_connection(destination_endpoint, user, user_pass):
             conn_dest.close()
             return 1
     except Exception as e:
-        logging.error("Error while creating database connection using user {}, can be wrong password".format(user))
+        logging.error("Error while creating database connection using user {}, with exception {}".format(user, str(e)))
         return 1
 
 
