@@ -1489,32 +1489,32 @@ def backup_stages(destination_account, destination_pod, dbname):
                 stg_name     = stage_schema+'.'+stage_name
                 cursor.execute("desc stage {}".format(stg_name))
                 cursor.execute("insert into audit_archive.public.stage_properties select '{}','{}','{}',* from table(result_scan(last_query_id()))".format(dbname,stage_schema,stage_name))
-                stage_def = """
-                insert into audit_archive.public.stage_backup
-                WITH T AS (
-                select
-                '{}.'||SCHEMANAME||'.'||STAGENAME as stagename,
-                CASE
-                WHEN parent_property = 'STAGE_LOCATION' THEN LISTAGG(property||'='||REPLACE(REPLACE(PROPERTY_VALUE,'["','\\''),'"]','\\''),' ')
-                WHEN parent_property = 'STAGE_INTEGRATION' THEN LISTAGG(property||'='||REPLACE(REPLACE(PROPERTY_VALUE,'[','\\''),']','\\''),' ')
-                WHEN parent_property = 'STAGE_COPY_OPTIONS' THEN 'COPY_OPTIONS = ('||LISTAGG(property||'='||REPLACE(REPLACE(PROPERTY_VALUE,'[',' '),']',' '),', ')||')'
-                WHEN parent_property = 'STAGE_FILE_FORMAT'  THEN 'FILE_FORMAT = ('|| LISTAGG(property||'='||REPLACE(REPLACE((CASE
-                                                                                                                            WHEN PROPERTY_VALUE = 'true' THEN PROPERTY_VALUE
-                                                                                                                            WHEN PROPERTY_VALUE = 'false' THEN PROPERTY_VALUE
-                                                                                                                            WHEN PROPERTY_VALUE = '0' THEN PROPERTY_VALUE
-                                                                                                                            WHEN PROPERTY_VALUE = '1' THEN PROPERTY_VALUE
-                                                                                                                            ELSE concat('\\'',PROPERTY_VALUE,'\\'') END)
-                                                                                                                            ,'[',' '),']',' '),', ')||')'
-                ELSE ' '
-                END as options
-                from audit_archive.public.stage_properties
-                where PROPERTY_VALUE is not null and PROPERTY_VALUE != ''
-                group by SCHEMANAME,STAGENAME,stagename,parent_property
-                order by schemaname,stagename)
-                select '{}','{}',2,'CREATE OR REPLACE STAGE '||STAGENAME||' '||LISTAGG(OPTIONS,' ')||';' from T
-                group by STAGENAME
-                """.format(str(dbname).upper(),str(dbname),stage_schema)
-                cursor.execute(stage_def)
+            stage_def = """
+            insert into audit_archive.public.stage_backup
+            WITH T AS (
+            select
+            SCHEMANAME,'{}.'||SCHEMANAME||'.'||STAGENAME as stagename,
+            CASE
+            WHEN parent_property = 'STAGE_LOCATION' THEN LISTAGG(property||'='||REPLACE(REPLACE(PROPERTY_VALUE,'["','\\''),'"]','\\''),' ')
+            WHEN parent_property = 'STAGE_INTEGRATION' THEN LISTAGG(property||'='||REPLACE(REPLACE(PROPERTY_VALUE,'[','\\''),']','\\''),' ')
+            WHEN parent_property = 'STAGE_COPY_OPTIONS' THEN 'COPY_OPTIONS = ('||LISTAGG(property||'='||REPLACE(REPLACE(PROPERTY_VALUE,'[',' '),']',' '),', ')||')'
+            WHEN parent_property = 'STAGE_FILE_FORMAT'  THEN 'FILE_FORMAT = ('|| LISTAGG(property||'='||REPLACE(REPLACE((CASE
+                                                                                                                        WHEN PROPERTY_VALUE = 'true' THEN PROPERTY_VALUE
+                                                                                                                        WHEN PROPERTY_VALUE = 'false' THEN PROPERTY_VALUE
+                                                                                                                        WHEN PROPERTY_VALUE = '0' THEN PROPERTY_VALUE
+                                                                                                                        WHEN PROPERTY_VALUE = '1' THEN PROPERTY_VALUE
+                                                                                                                        ELSE concat('\\'',PROPERTY_VALUE,'\\'') END)
+                                                                                                                        ,'[',' '),']',' '),', ')||')'
+            ELSE ' '
+            END as options
+            from audit_archive.public.stage_properties
+            where PROPERTY_VALUE is not null and PROPERTY_VALUE != ''
+            group by SCHEMANAME,STAGENAME,stagename,parent_property
+            order by schemaname,stagename)
+            select '{}',SCHEMANAME,2,'CREATE OR REPLACE STAGE '||STAGENAME||' '||LISTAGG(OPTIONS,' ')||';' from T
+            group by STAGENAME,SCHEMANAME
+            """.format(str(dbname).upper(),str(dbname))
+            cursor.execute(stage_def)
         logger.info("Completed taking backup of stages in database {} from pod {}".format(dbname, destination_pod))
         return 0
     except Exception as e:
@@ -1590,14 +1590,23 @@ def restore_stages_permissions(destination_account, destination_pod, dbname, arc
     """
     1. Rename the existing database to dbname_old (this is where the downtime starts)
     2. Rename the cloned database from production to actual database
-    3. restore the stages/permissions
+    3. restore the stages of that database
     """
-    error = 0
+    error           = 0 # overall return code to check the permissions and stages
+    error_stages    = 0 # return code to chek the restoration of stages
+    error_shares    = 0 # return code to check the restoration of permissions to shares
+    error_ownership = 0 # return code to check restoration of ownership permissions
+
     try:
+        """
+        Restoring the stages or creating the stages from backup
+        """
         connection, cursor = get_admin_connection(destination_account, destination_pod)
         cursor.execute("use database {}".format(dbname))
+        cursor.execute("use role accountadmin")
         logger.info("Restoring stages and file formats")
-        cursor.execute("select schemaname,def from audit_archive.public.stage_backup order by ordr")
+        cursor.execute("WITH T as (select distinct * from audit_archive.public.stage_backup where DBNAME='{}') "
+                       "select schemaname,def from T order by ordr".format(str(dbname).lower()))
         result = cursor.fetchall()
         if len(result) > 0:
             for var in result:
@@ -1608,11 +1617,47 @@ def restore_stages_permissions(destination_account, destination_pod, dbname, arc
                     cursor.execute("use schema {}".format(schemaname))
                     cursor.execute(sql_statement)
                 except Exception as e:
-                    logger.error("Failed to execute statement {}, continuing with next statement".format(sql_statement))
+                    logger.error("Failed to execute statement {} with exception {}, continuing with next statement".format(sql_statement,str(e)))
                     error = 1
+                    error_stages = 1
                     continue
-            logger.info("Successfully Restored stages and file formats")
-        # Taking backup of shares
+            if error_stages != 0:
+                logger.info("Errors occurred while restoring stages or file formats")
+            else:
+                logger.info("Successfully Restored stages and file formats")
+        """
+        Restoring the ownership permissions on the objects.
+        """
+        logger.info("Granting permissions on database {} to roles".format(dbname))
+        query = """
+        SELECT 'GRANT '||PRIVILEGE||' ON '||replace(GRANTED_ON,'_',' ')||' '|| NAME ||' TO '||GRANTED_TO||' '||GRANTEE_NAME||';' 
+        from audit_archive.public.dbgrants where name like '{}%' and PRIVILEGE='OWNERSHIP';
+        """.format(str(dbname).upper())
+        logger.info("running query {} to generate grant statements".format(query))
+        cursor.execute(query)
+        result = cursor.fetchall()
+        if len(result) > 0:
+            for var in result:
+                sql_statement = var[0]
+                logger.info("executing statement {}".format(sql_statement))
+                try:
+                    cursor.execute(sql_statement)
+                except snowflake.connector.errors.ProgrammingError as e:
+                    if e.errno == 2003:
+                        logger.warning("Failed execute statement as the object not exists")
+                        continue
+                    else:
+                        logger.error("Failed to execute statement {} with exception {}, continuing with next statement".format(sql_statement,str(e)))
+                        error = 1
+                        error_ownership = 1
+                        continue
+            if error_ownership != 0:
+                logger.info("Failed to execute ownership permissions on database {} to roles".format(dbname))
+            else:
+                logger.info("Successfully granted ownership permissions on database {} to roles".format(dbname))
+        """
+        once the database is renamed the permissions of the shares need to be captured again to remove those permissions.
+        """
         logger.info("Taking backup of permissions to shares in database {} from pod {}".format(dbname, destination_pod))
         cursor.execute("show shares")
         cursor.execute("select \"name\" from table(result_scan(last_query_id()))"
@@ -1638,35 +1683,58 @@ def restore_stages_permissions(destination_account, destination_pod, dbname, arc
                 try:
                     cursor.execute(sql_statement)
                 except Exception as e:
-                    logger.error("Failed to execute statement {}, continuing with next statement".format(sql_statement))
+                    logger.error("Failed to execute statement {} with exception {}, continuing with next statement".format(sql_statement,str(e)))
                     error = 1
+                    error_shares = 1
                     continue
-            logger.info("Successfully revoked permissions from shares on old database")
-        logger.info("Granting permissions on database {} to shares/users/roles".format(dbname))
+            if error_shares !=0 :
+                logger.error("Failed to revoke permissions from shares on old databases")
+            else:
+                logger.info("Successfully revoked permissions from shares on old database")
+
+        """
+        Restore the permissions belongs to shares, this will give the permissions back to shares. So client can 
+        access the data as it was.
+        """
+        logger.info("Granting permissions to shares on database objects")
         query = """
-        select CASE WHEN GRANTED_ON = 'ROLE' THEN 'GRANT '||replace(GRANTED_ON,'_',' ')||' '|| NAME ||' TO '||GRANTED_TO||' '||GRANTEE_NAME||';'
-        ELSE 'GRANT '||PRIVILEGE||' ON '||replace(GRANTED_ON,'_',' ')||' '|| NAME ||' TO '||GRANTED_TO||' '||GRANTEE_NAME||';' END as cmd
-        from audit_archive.public.dbgrants where granted_on not in ('ACCOUNT') and GRANTEE_NAME not in ('ACCOUNTADMIN','SECURITYADMIN')
-        and name not like 'SNOWFLAKE_SAMPLE_DATA%' and NAME not in ('SNOWFLAKE','DS_USAGE','ORGANIZATION_USAGE','MONITORING_OWNER') and NAME not like '%{}%'
-        """.format(arc_techops_number)
-        logger.info(query)
+        select 'GRANT '||PRIVILEGE||' ON '||GRANTED_ON||' '||NAME||' TO '||GRANTED_TO||' '||GRANTEE_NAME||';'
+        from audit_archive.public.dbgrants where granted_to='SHARE' and NAME like '{}%' and NAME not like '{}_{}%'
+        """.format(str(dbname).upper(),str(dbname).upper(),arc_techops_number)
         cursor.execute(query)
         result = cursor.fetchall()
         if len(result) > 0:
             for var in result:
                 sql_statement = var[0]
-                logger.info("executing statement {}".format(sql_statement))
+                logger.info(sql_statement)
                 try:
                     cursor.execute(sql_statement)
-                except Exception as e:
-                    logger.error("Failed to execute statement {}, continuing with next statement".format(sql_statement))
-                    error = 1
-                    continue
-            logger.info("Successfully granted permissions on database {} to shares".format(dbname))
+                except snowflake.connector.errors.ProgrammingError as e:
+                    if e.errno == 2003:
+                        logger.warning("Failed execute statement as the object not exists")
+                        continue
+                    else:
+                        logger.error("Failed to execute statement {} with exception {}, continuing with next statement".format(sql_statement,str(e)))
+                        error = 1
+                        error_shares = 1
+                        continue
+            if error_shares != 0:
+                logger.error("Failed to grant permissions to shares")
+            else:
+                logger.info("Successfully granted permissions to shares")
+
+        """
+        Assigning the default permissions to the roles on the database
+        """
+        logger.info("applying default permissions for the database {}".format(dbname))
+        create_database(destination_account, dbname, destination_pod)
+        logger.info("Granted default permissions to roles")
+
         if error == 1:
             logger.error("Failed to restore the permissions/stages")
             return 1
         return 0
+
     except Exception as e:
-        logger.error("Error occurred while restoring stages/permissions in pod".format(destination_pod))
+        logger.error("Error occurred while restoring stages/permissions in pod with error {}".format(destination_pod,str(e)))
         raise Exception("Error occurred while restoring stages/permissions in pod".format(destination_pod))

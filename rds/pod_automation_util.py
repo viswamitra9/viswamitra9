@@ -684,8 +684,19 @@ def get_excluded_and_destination_only_databases(source_endpoint,destination_endp
     excl_db = list(set(dest_db_list) - set(source_db_list))
     logging.info("uat only databases are: " + str(excl_db)[1:-1])
     # Getting exclude database list
-    query = "select dbname from dbainfra.dbo.refresh_db_exclusion_list where expires_dt > CURRENT_TIMESTAMP and dbname not in " \
-            "('sandbox','postgres','rdsadmin') and instancename='"+destination_endpoint.split('.')[0]+"';"
+    #query = "select dbname from dbainfra.dbo.refresh_db_exclusion_list where expires_dt > CURRENT_TIMESTAMP and dbname not in " \
+    #        "('sandbox','postgres','rdsadmin') and instancename='"+destination_endpoint.split('.')[0]+"';"
+    query = """
+        SELECT
+            DISTINCT database_name AS dbname
+        FROM
+            [dbainfra].[dbo].[refresh_db_exclusion_list_new]
+        WHERE
+            GETDATE() BETWEEN start_date AND end_date
+            AND is_deleted = 0
+            AND target_server = '{}'
+            AND database_name NOT IN ('sandbox', 'postgres', 'rdsadmin')
+    """.format(destination_endpoint.split('.')[0])
     cur_sql_dest, conn_sql_dest = sql_connect()
     conn_sql_dest.autocommit = True
     cur_sql_dest.execute(query)
@@ -790,7 +801,6 @@ def reset_passwords(pod,destination_endpoint, destination_instance):
     # Reset passwords of all db users in RDS instance
     logging.info("Reset user credentials in endpoint : {}, instance : {}".format(destination_endpoint,destination_instance))
     error = 0
-    check_dba_vault = 0
     cur_sql, conn_sql = sql_connect()
     sa_pass = get_user_password('/secret/default/v1/db-postgres-credentials/dba_users','sa')
     cur, conn = connect(destination_endpoint, 'sa', sa_pass, 'postgres')
@@ -798,42 +808,40 @@ def reset_passwords(pod,destination_endpoint, destination_instance):
     result = cur.fetchall()
     for row in result:
         user = row[0]
-        query_sql = "select TOP 1 vaultpath from dbainfra.dbo.pg_vault_path where username = '" + row[0] + "'"
-        rows = cur_sql.execute(query_sql)
-        row = rows.fetchone()
-        if row is not None:
-            vaultpath = row[0]
+        query_sql = "select TOP 1 vaultpath from dbainfra.dbo.pg_vault_path where lower(username) = '{}'".format(str(user).lower())
+        vaultpath = cur_sql.execute(query_sql).fetchone()
+        if vaultpath is not None:
+            vaultpath = vaultpath[0]
             path = str(vaultpath).replace("$MACHINE_POD", pod)
             try:
                 user_pass = get_app_user_password(path)
                 if user_pass is None:
-                    logging.error("The vaultpath does not exists for user : {} in pod : {}".format(user,pod))
+                    logging.error("The password is empty for this user : {} in path : {}, continuing with next user".format(user,vaultpath))
                     error = 1
                     continue
                 logging.info("Resetting password of user {} using credentials from {}".format(user,path))
+                query = "alter user {} password '{}'".format(str(user), str(user_pass))
+                cur.execute(query)
+                logging.info('password reset completed for user:' + str(user))
             except Exception as e:
-                logging.error("Error while resetting the password for user : {} in pod : {}".format(user, pod))
+                logging.error("Error while accessing the vault path {} to retrieve the password for user : {} with exception {}, continuing with next user".format(vaultpath, user, str(e)))
                 error = 1
                 continue
-        else:
+        if vaultpath is None:
             logging.error("No vault path entry found for user : {} in repository table, checking in DBA vault".format(user))
-            check_dba_vault = 1
-        if check_dba_vault == 1:
             vaultpath = "/secret/default/v1/db-postgres-credentials/password/{}/{}".format(pod,destination_instance)
             try:
                 user_pass = get_user_password(vaultpath,user)
                 if user_pass is None:
-                    logging.error("The vaultpath does not exists for user : {} in pod : {}".format(user, pod))
+                    logging.error("The vaultpath does not exists for user : {} in pod : {}, continuing with next user".format(user, pod))
                     continue
+                logging.info("Resetting password of user {} using credentials from {}".format(user, vaultpath))
+                query = "alter user {} password '{}'".format(str(user), str(user_pass))
+                cur.execute(query)
+                logging.info("password reset completed for user: {}".format(user))
             except Exception as e:
-                logging.error("Error while resetting the password for user : {} in pod : {}".format(user, pod))
+                logging.error("Error while resetting the password for user : {} in pod : {} with exception {}".format(str(user), pod, str(e)))
                 continue
-        check_dba_vault = 0
-        query = "alter user {} password '{}'".format(str(user),str(user_pass))
-        cur.execute(query)
-        conn.commit()
-        time.sleep(10)
-        logging.info('password reset completed for user:'+str(user))
     conn.close()
     if error == 1:
         return 1
@@ -962,14 +970,13 @@ def verify_user_connection(destination_endpoint, user, user_pass):
             conn_dest.close()
             return 1
     except Exception as e:
-        logging.error("Error while creating database connection using user {}, with exception {}".format(user, str(e)))
+        logging.error("Error while creating database connection using user {} with error {}".format(user,str(e)))
         return 1
 
 
 def verify_users(pod,destination_endpoint, destination_instance):
     # Reset passwords of all db users in RDS instance
     error = 0
-    check_dba_vault = 0
     cur_sql, conn_sql = sql_connect()
     sa_pass = get_user_password('/secret/default/v1/db-postgres-credentials/dba_users','sa')
     cur, conn = connect(destination_endpoint, 'sa', sa_pass, 'postgres')
@@ -981,11 +988,10 @@ def verify_users(pod,destination_endpoint, destination_instance):
     if result:
         for row in result:
             user = row[0]
-            query_sql = "select TOP 1 vaultpath from dbainfra.dbo.pg_vault_path where username = '{}'".format(user)
-            rows = cur_sql.execute(query_sql)
-            row = rows.fetchone()
-            if row is not None:
-                vaultpath = row[0]
+            query_sql = "select TOP 1 vaultpath from dbainfra.dbo.pg_vault_path where lower(username) = '{}'".format(str(user).lower())
+            vaultpath = cur_sql.execute(query_sql).fetchone()
+            if vaultpath is not None:
+                vaultpath = vaultpath[0]
                 path = str(vaultpath).replace("$MACHINE_POD", pod)
                 try:
                     user_pass = get_app_user_password(path)
@@ -995,16 +1001,13 @@ def verify_users(pod,destination_endpoint, destination_instance):
                         continue
                     return_code = verify_user_connection(destination_endpoint, user, user_pass)
                     if return_code == 1:
-                        logging.error("Failed to connect to the instance {} using user {}".format(destination_instance,user))
+                        logging.error("Failed to connect to the instance {} using user {} with vaultpath {}".format(destination_instance,user,vaultpath))
                         error = 1
                 except Exception as e:
-                    logging.error("Error while verifying the password for user : {} in pod : {}".format(user, pod))
+                    logging.error("Error while verifying the password for user : {} in pod : {} with exception {}".format(user, pod, str(e)))
                     error = 1
                     continue
-            else:
-                logging.info("No vault path entry found for user : {} in repository table, checking in DBA vault".format(user))
-                check_dba_vault = 1
-            if check_dba_vault == 1:
+            if vaultpath is None:
                 vaultpath = "/secret/default/v1/db-postgres-credentials/password/{}/{}".format(pod,destination_instance)
                 try:
                     user_pass = get_user_password(vaultpath,user)
@@ -1013,11 +1016,10 @@ def verify_users(pod,destination_endpoint, destination_instance):
                         continue
                     return_code = verify_user_connection(destination_endpoint, user, user_pass)
                     if return_code == 1:
-                        logging.error("Failed to connect to the instance {} using user {}".format(destination_instance, user))
+                        logging.error("Failed to connect to the instance {} using user {} with vaultpath {}".format(destination_instance,user,vaultpath))
                 except Exception as e:
-                    logging.error("Error while resetting the password for user : {} in pod : {}".format(user, pod))
+                    logging.error("Error while resetting the password for user : {} in pod : {} with exception {}".format(user, pod,str(e)))
                     continue
-            check_dba_vault = 0
     if error == 1:
         return 1
 
@@ -1088,8 +1090,7 @@ def get_app_user_password(vaultpath):
             passwd = response.json()['data']['secret']
             return passwd
         if response.status_code == 404 or response.status_code == 403:
-            logging.error("vaultpath does not exists or permission denied".format(vaultpath,response.content))
-            return
+            raise Exception("Got permission denied error, trying again".format(vaultpath,response.content))
         else:
             logging.error("Failed to retrieve credentials from {} with error {}, trying again".format(vaultpath,response.content))
             raise Exception("Failed to retrieve credentials from {} with error {}".format(vaultpath,response.content))
