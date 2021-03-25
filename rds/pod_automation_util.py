@@ -416,65 +416,6 @@ def make_super_user(endpoint, dbname):
     try:
         sa_pass = get_user_password('/secret/default/v1/db-postgres-credentials/dba_users','sa')
         cur, conn = connect(endpoint, 'sa', sa_pass, dbname)
-        query0 = """
-        DO $$
-        BEGIN
-        CREATE ROLE db_owner WITH NOLOGIN;
-        EXCEPTION WHEN OTHERS THEN
-        RAISE NOTICE 'not creating role db_owner -- it already exists';
-        END
-        $$;
-        """
-        query1 = """
-        --- This is used to change the ownership of objects before taking pg_dump from golden instance
-        DO
-        $do$
-        DECLARE
-        cur_query record;
-        BEGIN
-        FOR cur_query in WITH T as (select 'alter schema '||nspname||' owner to db_owner;' as query from pg_namespace n join pg_roles r on (n.nspowner=r.oid and r.rolname not in ('db_owner')) where nspname not like 'pg_toast%' and nspname not like 'pg_temp%' and nspname not in ('pg_catalog','information_schema')
-        union all
-        select 'alter '||
-        CASE c.relkind
-        WHEN 'r' THEN 'table '
-        WHEN 'v' THEN 'view '
-        WHEN 'm' THEN 'materialized view '
-        WHEN 'c' THEN 'TYPE '
-        WHEN 'f' THEN 'foreign table '
-        ELSE '' END ||n.nspname||'.'||c.relname||' owner to db_owner;' as query
-        FROM pg_class c JOIN pg_namespace n ON (c.relnamespace = n.oid) JOIN pg_roles r on (c.relowner=r.oid and r.rolname not in ('db_owner'))  
-        where n.nspname not like 'pg_toast%' and n.nspname not like 'pg_temp%' and n.nspname not in ('pg_catalog','information_schema') and c.relkind not in ('S','i')
-        union all
-        select 'alter sequence '||n.nspname||'.'||c.relname||' owner to db_owner;' as query FROM pg_class c JOIN pg_namespace n ON (c.relnamespace = n.oid) JOIN pg_roles r on (c.relowner=r.oid and r.rolname not in ('db_owner'))  where n.nspname not like 'pg_toast%' and n.nspname not like 'pg_temp%' and n.nspname not in ('pg_catalog','information_schema') and c.relkind='S'
-        union all
-        SELECT 'ALTER FUNCTION ' || quote_ident(s.nspname) || '.' ||quote_ident(s.function_name) || '('||s.parms||') owner TO db_owner' as query
-        FROM 
-        (
-         SELECT 
-          nspname
-          ,proname AS function_name
-          , pg_catalog.oidvectortypes(proargtypes) AS parms
-         FROM pg_catalog.pg_proc AS c JOIN pg_namespace n ON (c.pronamespace = n.oid) JOIN pg_roles r on (r.oid=c.proowner and r.rolname not in ('db_owner'))
-         WHERE nspname != 'information_schema'
-          AND nspname NOT LIKE E'pg\\_%'
-         ORDER BY proname
-        )s
-        union all
-        select 'ALTER SERVER '||srvname||' owner to db_owner;' as query from pg_foreign_server
-        union all
-        select 'alter operator '||oprname||' owner to db_owner;' as query from pg_operator o join pg_roles r on (o.oprowner=r.oid and r.rolname not in ('db_owner','rdsadmin'))
-        union all
-        select 'alter domain '||typname||' owner to db_owner;' as query from pg_type t join pg_roles r on (r.oid=t.typowner and r.rolname not in ('db_owner','rdsadmin')) where typtype = 'd') select * from T
-        union all
-        --- Change ownership of table, view, sequences , materialized views, foreign tables to dbowner
-        select 'ALTER SCHEMA '||nspname||' owner to db_owner;' from pg_namespace where nspname not like 'pg_toast%' and nspname not like 'pg_temp%' and nspname not in ('pg_catalog','information_schema')
-        LOOP
-        EXECUTE cur_query.query;
-        END LOOP;
-        EXECUTE 'grant db_owner to sa';
-        END;
-        $do$;
-        """
         query2 = """
         DO
         $$
@@ -492,8 +433,6 @@ def make_super_user(endpoint, dbname):
         END;
         $$;
         """
-        cur.execute(query0)
-        cur.execute(query1)
         cur.execute(query2)
         conn.commit()
         conn.close()
@@ -809,9 +748,9 @@ def reset_passwords(pod,destination_endpoint, destination_instance):
     for row in result:
         user = row[0]
         query_sql = "select TOP 1 vaultpath from dbainfra.dbo.pg_vault_path where lower(username) = '{}'".format(str(user).lower())
-        vaultpath = cur_sql.execute(query_sql).fetchone()
-        if vaultpath is not None:
-            vaultpath = vaultpath[0]
+        result_vaultpath = cur_sql.execute(query_sql).fetchone()
+        if result_vaultpath is not None:
+            vaultpath = result_vaultpath[0]
             path = str(vaultpath).replace("$MACHINE_POD", pod)
             try:
                 user_pass = get_app_user_password(path)
@@ -827,7 +766,7 @@ def reset_passwords(pod,destination_endpoint, destination_instance):
                 logging.error("Error while accessing the vault path {} to retrieve the password for user : {} with exception {}, continuing with next user".format(vaultpath, user, str(e)))
                 error = 1
                 continue
-        if vaultpath is None:
+        if result_vaultpath is None:
             logging.error("No vault path entry found for user : {} in repository table, checking in DBA vault".format(user))
             vaultpath = "/secret/default/v1/db-postgres-credentials/password/{}/{}".format(pod,destination_instance)
             try:
@@ -989,9 +928,9 @@ def verify_users(pod,destination_endpoint, destination_instance):
         for row in result:
             user = row[0]
             query_sql = "select TOP 1 vaultpath from dbainfra.dbo.pg_vault_path where lower(username) = '{}'".format(str(user).lower())
-            vaultpath = cur_sql.execute(query_sql).fetchone()
-            if vaultpath is not None:
-                vaultpath = vaultpath[0]
+            result_vaultpath = cur_sql.execute(query_sql).fetchone()
+            if result_vaultpath is not None:
+                vaultpath = result_vaultpath[0]
                 path = str(vaultpath).replace("$MACHINE_POD", pod)
                 try:
                     user_pass = get_app_user_password(path)
@@ -1007,7 +946,7 @@ def verify_users(pod,destination_endpoint, destination_instance):
                     logging.error("Error while verifying the password for user : {} in pod : {} with exception {}".format(user, pod, str(e)))
                     error = 1
                     continue
-            if vaultpath is None:
+            if result_vaultpath is None:
                 vaultpath = "/secret/default/v1/db-postgres-credentials/password/{}/{}".format(pod,destination_instance)
                 try:
                     user_pass = get_user_password(vaultpath,user)

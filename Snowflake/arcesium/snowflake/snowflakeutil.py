@@ -1360,7 +1360,7 @@ def replicate_database_from_source(source_account, destination_account, destinat
         connection, cursor = get_admin_connection(destination_account, destination_pod)
         cursor.execute("show replication accounts")
         cursor.execute("create or replace temporary table refresh_accounts(snowflake_region,created_on,account_name,"
-                       "description,organization_name) as select * from table(result_scan(last_query_id()))")
+                       "description) as select * from table(result_scan(last_query_id()))")
         accountname = cursor.execute("select snowflake_region||'.'||account_name from refresh_accounts "
                                      "where account_name=upper('{}')".format(source_account)).fetchone()[0]
         acc_dbname = str(accountname)+'.'+str(dbname)
@@ -1397,7 +1397,7 @@ def check_replication(source_account, source_pod, destination_account, destinati
         connection, cursor = get_admin_connection(source_account, source_pod)
         cursor.execute("show replication accounts")
         cursor.execute("create or replace table audit_archive.public.refresh_accounts(snowflake_region,created_on,account_name,"
-                       "description,organization_name) as select * from table(result_scan(last_query_id()))")
+                       "description) as select * from table(result_scan(last_query_id()))")
         count = cursor.execute("select count(*) as result from audit_archive.public.refresh_accounts "
                                "where account_name=upper('{}')".format(destination_account)).fetchone()[0]
         if count == 0:
@@ -1405,6 +1405,7 @@ def check_replication(source_account, source_pod, destination_account, destinati
             return 1
         return 0
     except Exception as e:
+        logger.error(e)
         logger.error("Error occurred while verifying replication between source pod : {} and destination pod : {}".format(source_pod, destination_pod))
         raise Exception("Error occurred while verifying replication between source pod : {} and destination pod : {}".format(source_pod, destination_pod))
 
@@ -1489,32 +1490,32 @@ def backup_stages(destination_account, destination_pod, dbname):
                 stg_name     = stage_schema+'.'+stage_name
                 cursor.execute("desc stage {}".format(stg_name))
                 cursor.execute("insert into audit_archive.public.stage_properties select '{}','{}','{}',* from table(result_scan(last_query_id()))".format(dbname,stage_schema,stage_name))
-            stage_def = """
-            insert into audit_archive.public.stage_backup
-            WITH T AS (
-            select
-            SCHEMANAME,'{}.'||SCHEMANAME||'.'||STAGENAME as stagename,
-            CASE
-            WHEN parent_property = 'STAGE_LOCATION' THEN LISTAGG(property||'='||REPLACE(REPLACE(PROPERTY_VALUE,'["','\\''),'"]','\\''),' ')
-            WHEN parent_property = 'STAGE_INTEGRATION' THEN LISTAGG(property||'='||REPLACE(REPLACE(PROPERTY_VALUE,'[','\\''),']','\\''),' ')
-            WHEN parent_property = 'STAGE_COPY_OPTIONS' THEN 'COPY_OPTIONS = ('||LISTAGG(property||'='||REPLACE(REPLACE(PROPERTY_VALUE,'[',' '),']',' '),', ')||')'
-            WHEN parent_property = 'STAGE_FILE_FORMAT'  THEN 'FILE_FORMAT = ('|| LISTAGG(property||'='||REPLACE(REPLACE((CASE
-                                                                                                                        WHEN PROPERTY_VALUE = 'true' THEN PROPERTY_VALUE
-                                                                                                                        WHEN PROPERTY_VALUE = 'false' THEN PROPERTY_VALUE
-                                                                                                                        WHEN PROPERTY_VALUE = '0' THEN PROPERTY_VALUE
-                                                                                                                        WHEN PROPERTY_VALUE = '1' THEN PROPERTY_VALUE
-                                                                                                                        ELSE concat('\\'',PROPERTY_VALUE,'\\'') END)
-                                                                                                                        ,'[',' '),']',' '),', ')||')'
-            ELSE ' '
-            END as options
-            from audit_archive.public.stage_properties
-            where PROPERTY_VALUE is not null and PROPERTY_VALUE != ''
-            group by SCHEMANAME,STAGENAME,stagename,parent_property
-            order by schemaname,stagename)
-            select '{}',SCHEMANAME,2,'CREATE OR REPLACE STAGE '||STAGENAME||' '||LISTAGG(OPTIONS,' ')||';' from T
-            group by STAGENAME,SCHEMANAME
-            """.format(str(dbname).upper(),str(dbname))
-            cursor.execute(stage_def)
+                stage_def = """
+                insert into audit_archive.public.stage_backup
+                WITH T AS (
+                select
+                '{}.'||SCHEMANAME||'.'||STAGENAME as stagename,
+                CASE
+                WHEN parent_property = 'STAGE_LOCATION' THEN LISTAGG(property||'='||REPLACE(REPLACE(PROPERTY_VALUE,'["','\\''),'"]','\\''),' ')
+                WHEN parent_property = 'STAGE_INTEGRATION' THEN LISTAGG(property||'='||REPLACE(REPLACE(PROPERTY_VALUE,'[','\\''),']','\\''),' ')
+                WHEN parent_property = 'STAGE_COPY_OPTIONS' THEN 'COPY_OPTIONS = ('||LISTAGG(property||'='||REPLACE(REPLACE(PROPERTY_VALUE,'[',' '),']',' '),', ')||')'
+                WHEN parent_property = 'STAGE_FILE_FORMAT'  THEN 'FILE_FORMAT = ('|| LISTAGG(property||'='||REPLACE(REPLACE((CASE
+                                                                                                                            WHEN PROPERTY_VALUE = 'true' THEN PROPERTY_VALUE
+                                                                                                                            WHEN PROPERTY_VALUE = 'false' THEN PROPERTY_VALUE
+                                                                                                                            WHEN PROPERTY_VALUE = '0' THEN PROPERTY_VALUE
+                                                                                                                            WHEN PROPERTY_VALUE = '1' THEN PROPERTY_VALUE
+                                                                                                                            ELSE concat('\\'',PROPERTY_VALUE,'\\'') END)
+                                                                                                                            ,'[',' '),']',' '),', ')||')'
+                ELSE ' '
+                END as options
+                from audit_archive.public.stage_properties
+                where PROPERTY_VALUE is not null and PROPERTY_VALUE != ''
+                group by SCHEMANAME,STAGENAME,stagename,parent_property
+                order by schemaname,stagename)
+                select '{}','{}',2,'CREATE OR REPLACE STAGE '||STAGENAME||' '||LISTAGG(OPTIONS,' ')||';' from T
+                group by STAGENAME
+                """.format(str(dbname).upper(),str(dbname),stage_schema)
+                cursor.execute(stage_def)
         logger.info("Completed taking backup of stages in database {} from pod {}".format(dbname, destination_pod))
         return 0
     except Exception as e:
@@ -1603,7 +1604,6 @@ def restore_stages_permissions(destination_account, destination_pod, dbname, arc
         """
         connection, cursor = get_admin_connection(destination_account, destination_pod)
         cursor.execute("use database {}".format(dbname))
-        cursor.execute("use role accountadmin")
         logger.info("Restoring stages and file formats")
         cursor.execute("WITH T as (select distinct * from audit_archive.public.stage_backup where DBNAME='{}') "
                        "select schemaname,def from T order by ordr".format(str(dbname).lower()))
