@@ -91,8 +91,7 @@ def main():
     try:
         global logfile
         # Enable logging
-        logfile = '/g/dba/logs/dbrefresh/snowflakerefresh_{}_{}_{}.log'.format(source_pod, destination_pod,
-                                                                               datetime.now().strftime("%d-%b-%Y-%H-%M-%S"))
+        logfile = '/g/dba/logs/dbrefresh/snowflakerefresh_{}_{}_{}.log'.format(source_pod, destination_pod,datetime.now().strftime("%d-%b-%Y-%H-%M-%S"))
         global logger
         logger = snowflakeutil.setup_logging(logfile=logfile)
 
@@ -177,41 +176,16 @@ def main():
             update_current_running_status(source_pod, destination_pod, statuscode=11,comments='Refresh is not scheduled for this pod')
             sys.exit(1)
         """
-        Snowflake replication do not handle the stages and permissions. So before refresh take a backup of definitions of stages, file formats
-        and permissions. Create backup tables in audit_archive database of destination pod to store DDL of stages and file formats.
+        Snowflake replication do not handle the stages and shares permissions. So before refresh take a backup of definitions of internal stages and share
+        permissions. Create backup tables in audit_archive database of destination pod to store DDL of stages and file formats.
         """
         logger.info("Creating inventory tables stage_properties, stage_backup")
         # creating backup tables
         destination_cursor.execute("create or replace table audit_archive.public.stage_properties "
-                                   "(dbname varchar,schemaname varchar, stagename varchar, "
-                       "parent_property varchar, property varchar, property_type varchar, "
-                       "property_value varchar, property_default varchar)")
+                                   "(dbname varchar,schemaname varchar, stagename varchar, parent_property varchar, "
+                                   "property varchar, property_type varchar,property_value varchar, property_default varchar)")
         destination_cursor.execute("create or replace table audit_archive.public.stage_backup"
                                    "(dbname varchar,schemaname varchar,ordr int,def varchar)")
-        """
-        Snowflake replication do not handle the user permissions on objects, so permissions on objects need to be backup
-        and restore the permissions on destination pod.
-        """
-        logger.info("Generate DDL commands of users , roles , privileges and store in table")
-        # Update the status on the desflow request
-        update_current_running_status(source_pod, destination_pod, statuscode=5,comments='Taking backup of privilages into table')
-        status_message = "Refresh environment\n      Source: {}\n      Destination: {}\n" \
-                 "Status: Taking backup of DDL statements of privilages into table. \n" \
-                 "Please check the attached log file for further details".format(source_pod, destination_pod)
-        update_current_running_refresh_status_on_desflow(status_message=status_message,files_to_attach=[logfile])
-        return_code = snowflakeutil.backup_users_roles_permissions(destination_account, destination_pod, dbname)
-        if return_code != 0:
-            logger.error("Failed to generate and store DDL commands for backup of users, roles and permissions")
-            # update the status of the failure on desflow and raise radar alert
-            status_message = "Refresh environment\n      Source: {}\n      Destination: {}\nStatus:" \
-                 "Failed to backup DDL statements of privialges into table. \n" \
-                 "Please check the attached log file for further details".format(source_pod,destination_pod)
-            update_current_running_refresh_status_on_desflow(status_message=status_message,files_to_attach=[logfile])
-            alert_description = "Failed to backup  DDL statements of privileges into table , " \
-                                "check logfile {}, WIKI for automation is : http://wiki.ia55.net/display/TECHDOCS/Snowflake+Database+Refresh+Automation".format(logfile)
-            snowflakeutil.raise_radar_alert(alert_source, alert_severity, alert_class, alert_key, alert_summary, alert_description)
-            sys.exit(1)
-        logger.info("Successfully Generated DDL commands for taking backup of users, roles , permissions and stored in table")
         """
         Snowflake replication work for database, in a Snowflake account there are multiple databases.
         So we need to replicate one by one database from source to destination.
@@ -250,7 +224,7 @@ def main():
                              "Status: Enabling replication for database {} \n" \
                              "Please check the attached log file for further details".format(source_pod,destination_pod,dbname)
             update_current_running_refresh_status_on_desflow(status_message=status_message, files_to_attach=[logfile])
-            return_code = snowflakeutil.enable_replication(source_account, source_pod, destination_account, destination_pod, dbname)
+            return_code = snowflakeutil.enable_replication_for_database(source_account, source_pod, destination_account, destination_pod, dbname)
             if return_code != 0:
                 logger.error("Failed to enable the replication "
                              "from source pod {} "
@@ -265,15 +239,40 @@ def main():
                                 "WIKI for automation is : http://wiki.ia55.net/display/TECHDOCS/Snowflake+Database+Refresh+Automation".format(source_pod,destination_pod,dbname,logfile)
                 snowflakeutil.raise_radar_alert(alert_source, alert_severity, alert_class, alert_key, alert_summary,alert_description)
                 sys.exit(1)
-            logger.info("Successfully enabled replication from source pod {} "
-                        "to destination pod {} for database {}".format(source_pod,destination_pod,dbname))
+            logger.info("Successfully enabled replication from source pod {} to destination pod {} for database {}".format(source_pod,destination_pod,dbname))
+
+            """
+            Snowflake replication do not handle the permissions given to shares for a database. Take a backup and restore 
+            them after refresh
+            """
+            logger.info("Backup permissions granted to shares")
+            # Update the status on the desflow request
+            update_current_running_status(source_pod, destination_pod, statuscode=5,comments='Taking backup of permissions assigned to shares')
+            status_message = "Refresh environment\n      Source: {}\n      Destination: {}\n" \
+                             "Status: Taking backup of permissions assigned to shares. \n" \
+                             "Please check the attached log file for further details".format(source_pod,destination_pod)
+            update_current_running_refresh_status_on_desflow(status_message=status_message, files_to_attach=[logfile])
+            return_code = snowflakeutil.backup_shares_permissions(destination_account, destination_pod, dbname)
+            if return_code != 0:
+                logger.error("Failed to backup permissions assigned to shares")
+                # update the status of the failure on desflow and raise radar alert
+                status_message = "Refresh environment\n      Source: {}\n      Destination: {}\nStatus:" \
+                                 "Failed to backup permissions assigned to shares \n" \
+                                 "Please check the attached log file for further details".format(source_pod,destination_pod)
+                update_current_running_refresh_status_on_desflow(status_message=status_message,files_to_attach=[logfile])
+                alert_description = "Failed to backup permissions assigned to shares , " \
+                                    "check logfile {}, WIKI for automation is : http://wiki.ia55.net/display/TECHDOCS/Snowflake+Database+Refresh+Automation".format(logfile)
+                snowflakeutil.raise_radar_alert(alert_source, alert_severity, alert_class, alert_key, alert_summary,alert_description)
+                sys.exit(1)
+            logger.info("Successfully backup permissions assigned to shares")
 
             """
             Once the replication is enabled to destination account (uat), login to destination account (uat) and start 
             database refresh by copying database from source to destination
             """
             # updating the status on desflow
-            update_current_running_status(source_pod, destination_pod, statuscode=3, comments='Replicating database {} from source pod {} to destination pod {}'.format(dbname,source_pod,destination_pod))
+            update_current_running_status(source_pod, destination_pod, statuscode=3,
+                                          comments='Replicating database {} from source pod {} to destination pod {}'.format(dbname,source_pod,destination_pod))
             status_message = "Refresh environment\n      Source: {}\n      Destination: {}\n" \
                      "Status: Replication Enabled and Replicating the database {} from source pod to destination pod. \n" \
                      "Please check the attached log file for further details".format(source_pod,destination_pod,dbname)
@@ -289,7 +288,8 @@ def main():
                      "Please check the attached log file for further details".format(source_pod,destination_pod,dbname)
                 update_current_running_refresh_status_on_desflow(status_message=status_message,files_to_attach=[logfile])
                 alert_description = "Error while replicating database {} between " \
-                                    "source pod {} and destination pod {} , check logfile {}, WIKI for automation is : http://wiki.ia55.net/display/TECHDOCS/Snowflake+Database+Refresh+Automation".format(dbname,source_pod,destination_pod,logfile)
+                                    "source pod {} and destination pod {} , check logfile {}, " \
+                                    "WIKI for automation is : http://wiki.ia55.net/display/TECHDOCS/Snowflake+Database+Refresh+Automation".format(dbname,source_pod,destination_pod,logfile)
                 snowflakeutil.raise_radar_alert(alert_source, alert_severity, alert_class, alert_key, alert_summary,alert_description)
                 sys.exit(1)
             logger.info("Successfully replicated database {} from source pod {} to destination pod {}".format(dbname, source_pod, destination_pod))
@@ -297,25 +297,25 @@ def main():
             Snowflake refresh do not take the backup of stages and file formats, so these objects need to be
             backup and restore after the replication is completed.
             """
-            logger.info("Generate DDL commands for taking backup of stages and file formats and store in table")
+            logger.info("Generate DDL commands for taking backup of internal stages")
             # updating the status on Desflow
-            update_current_running_status(source_pod, destination_pod, statuscode=4, comments='Taking backup of stages in database {}'.format(dbname))
+            update_current_running_status(source_pod, destination_pod, statuscode=4, comments='Taking backup of internal stages in database {}'.format(dbname))
             status_message = "Refresh environment\n      Source: {}\n      Destination: {}\n" \
-                     "Status: Taking backup of stages in database {}. \n" \
+                     "Status: Taking backup of internal stages in database {}. \n" \
                      "Please check the attached log file for further details".format(source_pod,destination_pod,dbname)
             update_current_running_refresh_status_on_desflow(status_message=status_message,files_to_attach=[logfile])
-            return_code = snowflakeutil.backup_stages(destination_account, destination_pod, dbname)
+            return_code = snowflakeutil.backup_internal_stages(destination_account, destination_pod, dbname)
             if return_code != 0:
-                logger.error("Failed to backup stages in database {}".format(dbname))
+                logger.error("Failed to take backup of internal stages in database {}".format(dbname))
                 # update the status of the failure on desflow and raise radar alert
                 status_message = "Refresh environment\n      Source: {}\n      Destination: {}\nStatus: " \
                      "Failed to backup stages in database {}. \n" \
                      "Please check the attached log file for further details".format(source_pod,destination_pod,dbname)
                 update_current_running_refresh_status_on_desflow(status_message=status_message,files_to_attach=[logfile])
-                alert_description = "Failed to backup DDL statements for stages into table , check logfile {}, WIKI for automation is : http://wiki.ia55.net/display/TECHDOCS/Snowflake+Database+Refresh+Automation".format(logfile)
+                alert_description = "Failed to take backup of internal stages in database , check logfile {}, WIKI for automation is : http://wiki.ia55.net/display/TECHDOCS/Snowflake+Database+Refresh+Automation".format(logfile)
                 snowflakeutil.raise_radar_alert(alert_source, alert_severity, alert_class, alert_key, alert_summary,alert_description)
                 sys.exit(1)
-            logger.info("Successfully Generated DDL commands for taking backup of stages, file formats and stored in table")
+            logger.info("Successfully Generated DDL commands for taking backup of internal stages")
             """
             Now all the ddl statements backup is completed. Now we need to rename the existing database to old and rename the 
             replication database to actual. After that restore the stages and other ddls into that database.
@@ -326,37 +326,50 @@ def main():
             # Make an entry into the table to remove them after two days
             cur_sql_dest.execute("insert into dbainfra.dbo.snowflake_old_databases(accountname,pod,dbname,deleted) values"
                                  "('{}','{}','{}_{}',0)".format(destination_account, destination_pod,dbname,arc_techops_number))
-        # Make entry after database rename
-        destination_cursor.execute("insert into audit_archive.public.refresh_status(request_number,step_name,step_status) values('{}','rename_database','s')".format(arc_techops_number))
-        # update the status on the Desflow
-        update_current_running_status(source_pod, destination_pod, statuscode=6,comments='Restoring stages, permissions')
-        status_message = "Refresh environment\n      Source: {}\n      Destination: {}\n" \
-                 "Status: Restoring stages and permissions \n" \
-                 "Please check the attached log file for further details".format(source_pod,destination_pod)
-        update_current_running_refresh_status_on_desflow(status_message=status_message,files_to_attach=[logfile])
-        # status updated on desflow
-        return_code = snowflakeutil.restore_stages_permissions(destination_account, destination_pod, dbname, arc_techops_number)
-        if return_code != 0:
-            logger.error("Failed to restore the stages or permissions")
+            # Make entry after database rename
+            destination_cursor.execute("insert into audit_archive.public.refresh_status(request_number,step_name,step_status) values('{}','rename_database','s')".format(arc_techops_number))
+            # update the status on the Desflow
+            update_current_running_status(source_pod, destination_pod, statuscode=6,comments='Restoring stages, permissions')
             status_message = "Refresh environment\n      Source: {}\n      Destination: {}\n" \
-             "Status: Failed to Create SQL file with DDL of privilages, stages etc. \n" \
+                     "Status: Restoring stages and fileformats \n" \
                      "Please check the attached log file for further details".format(source_pod,destination_pod)
             update_current_running_refresh_status_on_desflow(status_message=status_message,files_to_attach=[logfile])
-            alert_description = "Failed to restore the stages or permissions , check logfile {}, WIKI for automation is : http://wiki.ia55.net/display/TECHDOCS/Snowflake+Database+Refresh+Automation".format(logfile)
-            snowflakeutil.raise_radar_alert(alert_source, alert_severity, alert_class, alert_key, alert_summary,alert_description)
-            sys.exit(1)
-        logger.info("Successfully restored stages, file formats created in previous step")
+            # status updated on desflow
+            return_code = snowflakeutil.restore_stages_fileformats(destination_account, destination_pod, dbname, arc_techops_number)
+            if return_code != 0:
+                logger.error("Failed to restore the stages or file formats")
+                status_message = "Refresh environment\n      Source: {}\n      Destination: {}\n" \
+                 "Status: Failed to restore the stages or file formats. \n" \
+                         "Please check the attached log file for further details".format(source_pod,destination_pod)
+                update_current_running_refresh_status_on_desflow(status_message=status_message,files_to_attach=[logfile])
+                alert_description = "Failed to restore the stages or file formats , " \
+                                    "check logfile {}, WIKI for automation is : http://wiki.ia55.net/display/TECHDOCS/Snowflake+Database+Refresh+Automation".format(logfile)
+                snowflakeutil.raise_radar_alert(alert_source, alert_severity, alert_class, alert_key, alert_summary,alert_description)
+                sys.exit(1)
+            logger.info("Successfully restored stages, file formats")
+            # Restore permissions of objects and permissions granted to share
+            # update the status on the Desflow
+            update_current_running_status(source_pod, destination_pod, statuscode=6,comments='Restoring stages, permissions')
+            status_message = "Refresh environment\n      Source: {}\n      Destination: {}\n" \
+                     "Status: Restore object permissions and permissions assigned to shares \n" \
+                     "Please check the attached log file for further details".format(source_pod,destination_pod)
+            update_current_running_refresh_status_on_desflow(status_message=status_message,files_to_attach=[logfile])
+            # status updated on desflow
+            return_code = snowflakeutil.restore_shares_permissions(destination_account, destination_pod, dbname, arc_techops_number)
+            if return_code != 0:
+                logger.error("Failed to restore object permissions and permissions assigned to shares")
+                status_message = "Refresh environment\n      Source: {}\n      Destination: {}\n" \
+                 "Status: Failed to restore object permissions and permissions assigned to shares. \n" \
+                         "Please check the attached log file for further details".format(source_pod,destination_pod)
+                update_current_running_refresh_status_on_desflow(status_message=status_message,files_to_attach=[logfile])
+                alert_description = "Failed to restore object permissions and permissions assigned to shares , " \
+                                    "check logfile {}, WIKI for automation is : http://wiki.ia55.net/display/TECHDOCS/Snowflake+Database+Refresh+Automation".format(logfile)
+                snowflakeutil.raise_radar_alert(alert_source, alert_severity, alert_class, alert_key, alert_summary,alert_description)
+                sys.exit(1)
+            logger.info("Successfully restored object permissions and permissions assigned to shares")
+            # Database refresh completed successfully
+            logger.info("Database refresh completed successfully for database {}".format(databases))
 
-#        """
-#        As we are maintaining the permissions using the roles, after database restoration. Grant general permissions to
-#        the roles which in turn applied to the users.
-#        """
-#        for dbname in databases:
-#            logger.info("applying default permissions for the database {}".format(dbname))
-#            snowflakeutil.create_database(destination_account, dbname, destination_pod)
-#        logger.info("Granted default permissions to roles")
-
-        logger.info("Database refresh completed successfully for database {}".format(databases))
         update_current_running_status(source_pod, destination_pod, statuscode=8,comments='Refresh completed successfully')
         status_message = "Refresh environment\n      Source: {}\n      Destination: {}\n" \
              "Status: Refresh Completed successfully. \n" \

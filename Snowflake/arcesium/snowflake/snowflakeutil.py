@@ -1342,7 +1342,11 @@ def snowflake_cost_utilization_report():
     conn_sql_dest.close()
 
 
-# Functions related to Snowflake refresh
+"""
+Below are the functions which will be used in the Snowflake refresh
+"""
+
+
 def replicate_database_from_source(source_account, destination_account, destination_pod, dbname, source_pod):
     """
     taking example of arcesium_data_warehouse database
@@ -1354,15 +1358,11 @@ def replicate_database_from_source(source_account, destination_account, destinat
     this completes enabling replication and copying the database
     """
     try:
-        logger.info("Configuring replication for Snowflake accounts "
-                    "source : {} and destination : {}".format(source_account, destination_account))
+        logger.info("Configuring replication for Snowflake accounts source : {} and destination : {}".format(source_account, destination_account))
         source_account = str(source_account).split('.')[0]
         connection, cursor = get_admin_connection(destination_account, destination_pod)
         cursor.execute("show replication accounts")
-        cursor.execute("create or replace temporary table refresh_accounts(snowflake_region,created_on,account_name,"
-                       "description) as select * from table(result_scan(last_query_id()))")
-        accountname = cursor.execute("select snowflake_region||'.'||account_name from refresh_accounts "
-                                     "where account_name=upper('{}')".format(source_account)).fetchone()[0]
+        accountname = cursor.execute("select \"snowflake_region\"||'.'||\"name\" from table(result_scan(last_query_id())) where \"name\"=upper('{}')".format(source_account)).fetchone()[0]
         acc_dbname = str(accountname)+'.'+str(dbname)
         logger.info("creating replica of database {} from source {}".format(dbname, acc_dbname))
         cursor.execute("create database if not exists {}_replica_{} as replica of {}".format(source_pod,dbname, acc_dbname))
@@ -1374,15 +1374,12 @@ def replicate_database_from_source(source_account, destination_account, destinat
         use warehouse dba_wh;
         select * from table(information_schema.database_refresh_progress({}));
         """.format(str(source_pod)+'_replica_'+str(dbname))
-        logger.info("To see the status of the replication login to "
-                    "the target account {} and run below command {}".format(destination_account, query))
+        logger.info("To see the status of the replication login to the target account {} and run below command {}".format(destination_account, query))
         cursor.execute("alter database {}_replica_{} refresh".format(source_pod,dbname))
         cursor.execute("create or replace database {}_clone_{} clone {}_replica_{}".format(source_pod,dbname,source_pod, dbname))
-        # cursor.execute("drop database if exists {}_new".format(dbname))
-        return 0
     except Exception as e:
-        logger.error("Error {} occured while replicating database from source {} to destination {}".format(str(e),source_account,destination_account))
-        raise Exception("Error {} occured while replicating database from source {} to destination {}".format(str(e),source_account,destination_account))
+        logger.error("Error {} occurred while replicating database from source {} to destination {}".format(str(e),source_account,destination_account))
+        raise Exception("Error {} occurred while replicating database from source {} to destination {}".format(str(e),source_account,destination_account))
 
 
 def check_replication(source_account, source_pod, destination_account, destination_pod):
@@ -1396,21 +1393,16 @@ def check_replication(source_account, source_pod, destination_account, destinati
         destination_account = str(destination_account).split('.')[0]
         connection, cursor = get_admin_connection(source_account, source_pod)
         cursor.execute("show replication accounts")
-        cursor.execute("create or replace table audit_archive.public.refresh_accounts(snowflake_region,created_on,account_name,"
-                       "description) as select * from table(result_scan(last_query_id()))")
-        count = cursor.execute("select count(*) as result from audit_archive.public.refresh_accounts "
-                               "where account_name=upper('{}')".format(destination_account)).fetchone()[0]
+        count = cursor.execute("select count(*) from table(result_scan(last_query_id())) where \"name\"='{}'".format(str(destination_account).upper())).fetchone()[0]
         if count == 0:
             logger.error("replication is not enabled from source pod : {} to destination pod : {}".format(source_pod, destination_pod))
-            return 1
-        return 0
+            raise Exception("replication is not enabled from source pod : {} to destination pod : {}".format(source_pod, destination_pod))
     except Exception as e:
-        logger.error(e)
-        logger.error("Error occurred while verifying replication between source pod : {} and destination pod : {}".format(source_pod, destination_pod))
-        raise Exception("Error occurred while verifying replication between source pod : {} and destination pod : {}".format(source_pod, destination_pod))
+        logger.error("Error: {} occurred while verifying replication between source pod : {} and destination pod : {}".format(str(e),source_pod, destination_pod))
+        raise Exception("Error: {} occurred while verifying replication between source pod : {} and destination pod : {}".format(str(e),source_pod, destination_pod))
 
 
-def enable_replication(source_account, source_pod, destination_account, destination_pod, dbname):
+def enable_replication_for_database(source_account, source_pod, destination_account, destination_pod, dbname):
     """
     1. Snowflake replication works on database wise.
     2. Login to source account, enable replication for database
@@ -1419,13 +1411,12 @@ def enable_replication(source_account, source_pod, destination_account, destinat
     try:
         destination_account = str(destination_account).split('.')[0]
         connection, cursor  = get_admin_connection(source_account, source_pod)
-        accountname = cursor.execute("select snowflake_region||'.'||account_name from audit_archive.public.refresh_accounts "
-                                     "where account_name='{}'".format(str(destination_account)).upper()).fetchone()[0]
+        cursor.execute("show replication accounts")
+        accountname = cursor.execute("select \"snowflake_region\"||'.'||\"name\" from table(result_scan(last_query_id())) where \"name\"=upper('{}')".format(destination_account)).fetchone()[0]
         logger.info("enabling replication for database {} from source pod {} to destination pod {}".format(dbname,source_pod,destination_pod))
         logger.info("alter database {} enable replication to accounts {}".format(dbname, accountname))
         cursor.execute("alter database {} enable replication to accounts {}".format(dbname, accountname))
         logger.info("enabled replication for database {} from source pod {} to destination pod".format(dbname,source_pod,destination_pod))
-        return 0
     except Exception as e:
         logger.error("Error {} occurred while enabling replication for database {} between "
                      "source pod : {} and destination pod : {}".format(str(e),dbname,source_pod, destination_pod))
@@ -1433,55 +1424,16 @@ def enable_replication(source_account, source_pod, destination_account, destinat
                         "source pod : {} and destination pod : {}".format(str(e),dbname,source_pod, destination_pod))
 
 
-def backup_stages(destination_account, destination_pod, dbname):
+def backup_internal_stages(destination_account, destination_pod, dbname):
     """
-    Take backup of file formats, stages from the database
+    Take backup of internal stages
     """
     try:
-        logger.info("Started taking backup of stages in pod {} from database {}".format(destination_pod, dbname))
+        logger.info("Started taking backup of internal stages in pod {} from database {}".format(destination_pod, dbname))
         connection, cursor = get_admin_connection(destination_account, destination_pod)
         cursor.execute("use database {}".format(dbname))
-        #logger.info("Taking backup of pipes in pod {} from database {}".format(destination_pod, dbname))
-        #cursor.execute("select PIPE_SCHEMA||'.'||PIPE_NAME as pipe_name from information_schema.pipes where pipe_catalog='{}'".format(dbname))
-        #result = cursor.fetchall()
-        #if len(result) > 0:
-        #    for var in result:
-        #        pipe_name = var[0]
-        #        cursor.execute("insert into audit_archive.public.stage_pipes_streams_tasks select 5, get_ddl('pipe', '{}',TRUE)".format(pipe_name))
-        # Backup tasks and definitions
-        #logger.info("Taking backup of tasks in pod {} from database {}".format(destination_pod, dbname))
-        #cursor.execute("show tasks in database {}".format(dbname))
-        #cursor.execute("select \"schema_name\"||'.'||\"name\" as task_name from table(result_scan(last_query_id()))")
-        #result = cursor.fetchall()
-        #if len(result) > 0:
-        #    for var in result:
-        #        task_name = var[0]
-        #        cursor.execute("insert into audit_archive.public.stage_pipes_streams_tasks select 4, get_ddl('task', '{}',TRUE)".format(task_name))
-        # Backup streams and definitions
-        #logger.info("Taking backup of streams in pod {} from database {}".format(destination_pod, dbname))
-        #cursor.execute("show streams in database {}".format(dbname))
-        #cursor.execute("select \"schema_name\"||'.'||\"name\" as stream_name from table(result_scan(last_query_id()))")
-        #result = cursor.fetchall()
-        #if len(result) > 0:
-        #    for var in result:
-        #        stream_name = var[0]
-        #        cursor.execute("insert into audit_archive.public.stage_pipes_streams_tasks select 3, get_ddl('stream', '{}',TRUE)".format(stream_name))
-        # Backup file formats and definitions
-        logger.info("Taking backup of file formats in pod {} from database {}".format(destination_pod, dbname))
-        cursor.execute("show file formats in database {}".format(dbname))
-        cursor.execute("select \"schema_name\",\"name\" from table(result_scan(last_query_id()))")
-        result = cursor.fetchall()
-        if len(result) > 0:
-            for var in result:
-                schemaname = var[0]
-                formatname = var[1]
-                format_name = str(schemaname)+'.'+str(formatname)
-                cursor.execute("insert into audit_archive.public.stage_backup select '{}','{}',1, get_ddl('file_format','{}',TRUE)".format(dbname,schemaname,format_name))
-        # Backup of stages and properties
-        logger.info("Taking backup of stages in pod {} from database {}".format(destination_pod, dbname))
         cursor.execute("show stages in database {}".format(dbname))
-        cursor.execute("select \"schema_name\",\"name\" from table(result_scan(last_query_id()))")
-        # cursor.execute("select STAGE_SCHEMA, STAGE_NAME from information_schema.stages where stage_catalog='{}'".format(str(dbname).upper()))
+        cursor.execute("select \"schema_name\",\"name\" from table(result_scan(last_query_id())) where \"type\"='INTERNAL'")
         result = cursor.fetchall()
         if len(result) > 0:
             for var in result:
@@ -1516,11 +1468,10 @@ def backup_stages(destination_account, destination_pod, dbname):
                 group by STAGENAME
                 """.format(str(dbname).upper(),str(dbname),stage_schema)
                 cursor.execute(stage_def)
-        logger.info("Completed taking backup of stages in database {} from pod {}".format(dbname, destination_pod))
-        return 0
+        logger.info("Completed taking backup of internal stages in database {} from pod {}".format(dbname, destination_pod))
     except Exception as e:
-        logger.error("Error {} occurred while taking backup of stages/pipes/tasks/streams from pod {} in database {}".format(str(e),destination_pod, dbname))
-        raise Exception("Error {} occurred while taking backup of stages/pipes/tasks/streams from pod {} in database {}".format(str(e),destination_pod, dbname))
+        logger.error("Error {} occurred while taking backup of internal stages from pod {} in database {}".format(str(e),destination_pod, dbname))
+        raise Exception("Error {} occurred while taking backup of internal stages from pod {} in database {}".format(str(e),destination_pod, dbname))
 
 
 def check_refresh_possibility(dest_pod):
@@ -1540,34 +1491,16 @@ def check_refresh_possibility(dest_pod):
     logger.info("Refresh is scheduled for snowflake pod {}, proceeding further".format(dest_pod))
 
 
-def backup_users_roles_permissions(destination_account, destination_pod, dbname):
+def backup_shares_permissions(destination_account, destination_pod, dbname):
     """
-    by default snowflake refresh do not take care of permissions so permissions need to be copied explicitly
+    by default snowflake refresh do not take care of permissions, taking backup of permissions given to outbound shares
     """
     try:
         logger.info("Started taking backup of privileges in pod {}".format(destination_pod))
         connection, cursor = get_admin_connection(destination_account, destination_pod)
         cursor.execute("use database audit_archive")
-        cursor.execute("show users")
-        cursor.execute("create or replace table audit_archive.public.dbusers as select *  from table(result_scan(last_query_id()))")
-        cursor.execute("show roles")
-        cursor.execute("create or replace table audit_archive.public.dbroles as select * from table(result_scan(last_query_id()))")
-        cursor.execute("CREATE OR replace TABLE audit_archive.public.dbgrants(created_on timestamp_ltz,privilege varchar,granted_on varchar,"
+        cursor.execute("CREATE OR REPLACE TABLE audit_archive.public.dbgrants(created_on timestamp_ltz,privilege varchar,granted_on varchar,"
                        "name varchar,granted_to varchar,grantee_name varchar,grant_option varchar,granted_by varchar)")
-        cursor.execute("SELECT \"name\" as NAME FROM DBROLES")
-        for var in cursor.fetchall():
-            rolname = var[0]
-            cursor.execute("show grants to role {}".format(rolname))
-            cursor.execute("insert into audit_archive.public.dbgrants select * from table(result_scan(last_query_id()))")
-            cursor.execute("show grants on role {}".format(rolname))
-            cursor.execute("insert into audit_archive.public.dbgrants select * from table(result_scan(last_query_id()))")
-        cursor.execute("SELECT \"name\" as NAME FROM DBUSERS")
-        for var in cursor.fetchall():
-            username = var[0]
-            cursor.execute("show grants to user {}".format(username))
-            cursor.execute("insert into audit_archive.public.dbgrants select *,null,null,null from table(result_scan(last_query_id()))")
-            cursor.execute("show grants on user {}".format(username))
-            cursor.execute("insert into audit_archive.public.dbgrants select * from table(result_scan(last_query_id()))")
         logger.info("Taking backup of permissions to shares in database {} from pod {}".format(dbname, destination_pod))
         cursor.execute("show shares")
         cursor.execute("select \"name\" from table(result_scan(last_query_id()))"
@@ -1581,126 +1514,108 @@ def backup_users_roles_permissions(destination_account, destination_pod, dbname)
                 cursor.execute("show grants on share {}".format(share_name))
                 cursor.execute("insert into audit_archive.public.dbgrants select * from table(result_scan(last_query_id()))")
             logger.info("Completed taking backup of shares privileges in pod {}".format(destination_pod, dbname))
-        return 0
     except Exception as e:
         logger.error("Error {} occurred while taking backup of roles and privileges in pod {}".format(str(e),destination_pod))
         raise Exception("Error {} occurred while taking backup of roles and privileges in pod {}".format(str(e),destination_pod))
 
 
-def restore_stages_permissions(destination_account, destination_pod, dbname, arc_techops_number):
+def restore_stages_fileformats(destination_account, destination_pod, dbname, arc_techops_number):
     """
-    1. Rename the existing database to dbname_old (this is where the downtime starts)
-    2. Rename the cloned database from production to actual database
-    3. restore the stages of that database
+    Restore file formats, stages
     """
-    error           = 0 # overall return code to check the permissions and stages
-    error_stages    = 0 # return code to chek the restoration of stages
-    error_shares    = 0 # return code to check the restoration of permissions to shares
-    error_ownership = 0 # return code to check restoration of ownership permissions
-
     try:
-        """
-        Restoring the stages or creating the stages from backup
-        """
+        logger.info("started restoring file file formats")
         connection, cursor = get_admin_connection(destination_account, destination_pod)
         cursor.execute("use database {}".format(dbname))
-        logger.info("Restoring stages and file formats")
+        cursor.execute("show file formats in database {}_{}".format(dbname,arc_techops_number))
+        cursor.execute("select 'create or replace file format '||\"schema_name\"||'.'||\"name\"||' CLONE '||\"database_name\"||'.'||\"schema_name\"||'.'||\"name\"||';' "
+                       "from table(result_scan(last_query_id())) where \"schema_name\" in (select SCHEMA_NAME from information_schema.SCHEMATA)")
+        result = cursor.fetchall()
+        if len(result) > 0:
+            for var in result:
+                sql = var[0]
+                cursor.execute(sql)
+            logger.info("Restoration of file formats is completed")
+        logger.info("started restoration of external stages")
+        cursor.execute("show stages in database {}_{}".format(dbname, arc_techops_number))
+        cursor.execute("select 'create or replace stage '||\"schema_name\"||'.'||\"name\"||' CLONE '||\"database_name\"||'.'||\"schema_name\"||'.'||\"name\"||';' "
+                       "from table(result_scan(last_query_id())) where \"type\"='EXTERNAL' and \"schema_name\" in (select SCHEMA_NAME from information_schema.SCHEMATA)")
+        result = cursor.fetchall()
+        if len(result) > 0:
+            for var in result:
+                sql = var[0]
+                cursor.execute(sql)
+            logger.info("Restoration of external stages is completed")
+        logger.info("Started restoration of internal stages")
         cursor.execute("WITH T as (select distinct * from audit_archive.public.stage_backup where DBNAME='{}') "
-                       "select schemaname,def from T order by ordr".format(str(dbname).lower()))
+                       "select schemaname,def from T where upper(schemaname) in (select SCHEMA_NAME from information_schema.SCHEMATA) order by ordr".format(str(dbname).lower()))
         result = cursor.fetchall()
         if len(result) > 0:
             for var in result:
                 schemaname    = var[0]
                 sql_statement = var[1]
-                logger.info(sql_statement)
                 try:
                     cursor.execute("use schema {}".format(schemaname))
                     cursor.execute(sql_statement)
                 except Exception as e:
                     logger.error("Failed to execute statement {} with exception {}, continuing with next statement".format(sql_statement,str(e)))
-                    error = 1
-                    error_stages = 1
                     continue
-            if error_stages != 0:
-                logger.info("Errors occurred while restoring stages or file formats")
-            else:
-                logger.info("Successfully Restored stages and file formats")
-        """
-        Restoring the ownership permissions on the objects.
-        """
-        logger.info("Granting permissions on database {} to roles".format(dbname))
-        query = """
-        SELECT 'GRANT '||PRIVILEGE||' ON '||replace(GRANTED_ON,'_',' ')||' '|| NAME ||' TO '||GRANTED_TO||' '||GRANTEE_NAME||';' 
-        from audit_archive.public.dbgrants where name like '{}%' and PRIVILEGE='OWNERSHIP';
-        """.format(str(dbname).upper())
-        logger.info("running query {} to generate grant statements".format(query))
-        cursor.execute(query)
+            logger.info("Restoration of internal stages is completed")
+    except Exception as e:
+        logger.error("Error : {} occurred to restore the file format / stages".format(str(e)))
+        raise Exception("Error : {} occurred to restore the file format / stages".format(str(e)))
+
+
+def change_ownership_to_db_owner(destination_account, destination_pod, dbname):
+    """
+    This is to make the database_owner as the owner of all objects in the database
+    """
+    try:
+        connection, cursor = get_admin_connection(destination_account, destination_pod)
+        cursor.execute("use database {}".format(dbname))
+        cursor.execute("GRANT OWNERSHIP ON DATABASE {} to {}_owner".format(dbname,dbname))
+        cursor.execute("select SCHEMA_NAME from information_schema.SCHEMATA where SCHEMA_NAME not in ('INFORMATION_SCHEMA')")
         result = cursor.fetchall()
-        if len(result) > 0:
-            for var in result:
-                sql_statement = var[0]
-                logger.info("executing statement {}".format(sql_statement))
-                try:
-                    cursor.execute(sql_statement)
-                except snowflake.connector.errors.ProgrammingError as e:
-                    if e.errno == 2003:
-                        logger.warning("Failed execute statement as the object not exists")
-                        continue
-                    else:
-                        logger.error("Failed to execute statement {} with exception {}, continuing with next statement".format(sql_statement,str(e)))
-                        error = 1
-                        error_ownership = 1
-                        continue
-            if error_ownership != 0:
-                logger.info("Failed to execute ownership permissions on database {} to roles".format(dbname))
-            else:
-                logger.info("Successfully granted ownership permissions on database {} to roles".format(dbname))
+        for var in result:
+            schema_name = var[0]
+            cursor.execute("GRANT OWNERSHIP ON SCHEMA <> to role {}_owner".format(schema_name,dbname))
+            cursor.execute("GRANT OWNERSHIP ON ALL TABLES IN SCHEMA {} to role {}_owner  COPY CURRENT GRANTS".format(schema_name,dbname))
+            cursor.execute("GRANT OWNERSHIP ON ALL VIEWS IN SCHEMA {} to role {}_owner  COPY CURRENT GRANTS".format(schema_name,dbname))
+            cursor.execute("GRANT OWNERSHIP ON ALL STAGES IN SCHEMA {} to role {}_owner  COPY CURRENT GRANTS".format(schema_name,dbname))
+            cursor.execute("GRANT OWNERSHIP ON ALL FILE FORMATS IN SCHEMA {} to role {}_owner  COPY CURRENT GRANTS".format(schema_name,dbname))
+            cursor.execute("GRANT OWNERSHIP ON ALL FUNCTIONS IN SCHEMA {} to role {}_owner  COPY CURRENT GRANTS".format(schema_name,dbname))
+            cursor.execute("GRANT OWNERSHIP ON ALL PROCEDURES IN SCHEMA {} to role {}_owner  COPY CURRENT GRANTS".format(schema_name,dbname))
+            cursor.execute("GRANT OWNERSHIP ON ALL SEQUENCES IN SCHEMA {} to role {}_owner  COPY CURRENT GRANTS".format(schema_name,dbname))
+            cursor.execute("GRANT OWNERSHIP ON ALL STREAMS IN SCHEMA {} to role {}_owner  COPY CURRENT GRANTS".format(schema_name,dbname))
+            cursor.execute("GRANT OWNERSHIP ON ALL TASKS IN SCHEMA {} to role {}_owner  COPY CURRENT GRANTS".format(schema_name,dbname))
+            logger.info("Granted ownership on all objects in schema {} to role {}_owner".format(schema_name,dbname))
+        logger.info("granted ownership on all objects in the database {} to role {}_owner".format(dbname,dbname))
+    except Exception as e:
+        logger.error("Error :{} occurred while changing the object owner ship in database : {}".format(str(e),dbname))
+        raise Exception("Error occurred while changing the object owner ship in database : {}".format(str(e),dbname))
+
+
+def restore_shares_permissions(destination_account, destination_pod, dbname, arc_techops_number):
+    """
+    Restore the permissions on objects to shares
+    """
+    try:
+        error = 0
+        connection, cursor = get_admin_connection(destination_account, destination_pod)
+        cursor.execute("use database {}".format(dbname))
         """
-        once the database is renamed the permissions of the shares need to be captured again to remove those permissions.
+        once the database is renamed share will have permissions for renamed database or old database. So we will remove
+        the access to the database (db_<techops number>) and grant the permissions back to the share on the new database
+        copied from the production.
         """
-        logger.info("Taking backup of permissions to shares in database {} from pod {}".format(dbname, destination_pod))
-        cursor.execute("show shares")
-        cursor.execute("select \"name\" from table(result_scan(last_query_id()))"
-                       " where \"kind\"='OUTBOUND' and \"database_name\"='{}_{}'".format(str(dbname).upper(),arc_techops_number))
-        result = cursor.fetchall()
-        if len(result) > 0:
-            for var in result:
-                share_name = var[0]
-                cursor.execute("show grants to share {}".format(share_name))
-                cursor.execute("insert into audit_archive.public.dbgrants select * from table(result_scan(last_query_id()))")
-            logger.info("Completed taking backup of shares privileges in pod {}".format(destination_pod))
-        logger.info("Revoking permissions from shares on old database")
+        logger.info("Revoking and Granting permissions to shares on database objects")
         query = """
         select 'REVOKE '||PRIVILEGE||' ON '||GRANTED_ON||' '||NAME||' FROM '||GRANTED_TO||' '||GRANTEE_NAME||';'
-        from audit_archive.public.dbgrants where granted_to='SHARE' and NAME like '{}_{}%'
-        """.format(str(dbname).upper(),arc_techops_number)
-        cursor.execute(query)
-        result = cursor.fetchall()
-        if len(result) > 0:
-            for var in result:
-                sql_statement = var[0]
-                logger.info(sql_statement)
-                try:
-                    cursor.execute(sql_statement)
-                except Exception as e:
-                    logger.error("Failed to execute statement {} with exception {}, continuing with next statement".format(sql_statement,str(e)))
-                    error = 1
-                    error_shares = 1
-                    continue
-            if error_shares !=0 :
-                logger.error("Failed to revoke permissions from shares on old databases")
-            else:
-                logger.info("Successfully revoked permissions from shares on old database")
-
-        """
-        Restore the permissions belongs to shares, this will give the permissions back to shares. So client can 
-        access the data as it was.
-        """
-        logger.info("Granting permissions to shares on database objects")
-        query = """
+        from audit_archive.public.dbgrants where granted_to='SHARE' and split_part(NAME,'.',0)='{}_{}'
+        union
         select 'GRANT '||PRIVILEGE||' ON '||GRANTED_ON||' '||NAME||' TO '||GRANTED_TO||' '||GRANTEE_NAME||';'
-        from audit_archive.public.dbgrants where granted_to='SHARE' and NAME like '{}%' and NAME not like '{}_{}%'
-        """.format(str(dbname).upper(),str(dbname).upper(),arc_techops_number)
+        from audit_archive.public.dbgrants where granted_to='SHARE' and split_part(NAME,'.',0)='{}'
+        """.format(str(dbname).upper(),arc_techops_number,str(dbname).upper())
         cursor.execute(query)
         result = cursor.fetchall()
         if len(result) > 0:
@@ -1716,13 +1631,11 @@ def restore_stages_permissions(destination_account, destination_pod, dbname, arc
                     else:
                         logger.error("Failed to execute statement {} with exception {}, continuing with next statement".format(sql_statement,str(e)))
                         error = 1
-                        error_shares = 1
                         continue
-            if error_shares != 0:
-                logger.error("Failed to grant permissions to shares")
-            else:
-                logger.info("Successfully granted permissions to shares")
-
+        """
+        change the permissions on the database objects to <dbname>_owner
+        """
+        change_ownership_to_db_owner(destination_account, destination_pod, dbname)
         """
         Assigning the default permissions to the roles on the database
         """
@@ -1731,7 +1644,7 @@ def restore_stages_permissions(destination_account, destination_pod, dbname, arc
         logger.info("Granted default permissions to roles")
 
         if error == 1:
-            logger.error("Failed to restore the permissions/stages")
+            logger.error("Failed to restore the permissions")
             return 1
         return 0
 
