@@ -1358,7 +1358,7 @@ def replicate_database_from_source(source_account, destination_account, destinat
     this completes enabling replication and copying the database
     """
     try:
-        logger.info("Configuring replication for Snowflake accounts source : {} and destination : {}".format(source_account, destination_account))
+        logger.info("Configuring replication for database {} source : {} and destination : {}".format(dbname,source_account, destination_account))
         source_account = str(source_account).split('.')[0]
         connection, cursor = get_admin_connection(destination_account, destination_pod)
         cursor.execute("show replication accounts")
@@ -1379,7 +1379,8 @@ def replicate_database_from_source(source_account, destination_account, destinat
         cursor.execute("create or replace database {}_clone_{} clone {}_replica_{}".format(source_pod,dbname,source_pod, dbname))
     except Exception as e:
         logger.error("Error {} occurred while replicating database from source {} to destination {}".format(str(e),source_account,destination_account))
-        raise Exception("Error {} occurred while replicating database from source {} to destination {}".format(str(e),source_account,destination_account))
+        # raise Exception("Error {} occurred while replicating database from source {} to destination {}".format(str(e),source_account,destination_account))
+        return 1
 
 
 def check_replication(source_account, source_pod, destination_account, destination_pod):
@@ -1396,10 +1397,12 @@ def check_replication(source_account, source_pod, destination_account, destinati
         count = cursor.execute("select count(*) from table(result_scan(last_query_id())) where \"name\"='{}'".format(str(destination_account).upper())).fetchone()[0]
         if count == 0:
             logger.error("replication is not enabled from source pod : {} to destination pod : {}".format(source_pod, destination_pod))
-            raise Exception("replication is not enabled from source pod : {} to destination pod : {}".format(source_pod, destination_pod))
+            # raise Exception("replication is not enabled from source pod : {} to destination pod : {}".format(source_pod, destination_pod))
+            return 1
     except Exception as e:
         logger.error("Error: {} occurred while verifying replication between source pod : {} and destination pod : {}".format(str(e),source_pod, destination_pod))
-        raise Exception("Error: {} occurred while verifying replication between source pod : {} and destination pod : {}".format(str(e),source_pod, destination_pod))
+        # raise Exception("Error: {} occurred while verifying replication between source pod : {} and destination pod : {}".format(str(e),source_pod, destination_pod))
+        return 1
 
 
 def enable_replication_for_database(source_account, source_pod, destination_account, destination_pod, dbname):
@@ -1420,8 +1423,9 @@ def enable_replication_for_database(source_account, source_pod, destination_acco
     except Exception as e:
         logger.error("Error {} occurred while enabling replication for database {} between "
                      "source pod : {} and destination pod : {}".format(str(e),dbname,source_pod, destination_pod))
-        raise Exception("Error {} occurred while enabling replication for database {} between "
-                        "source pod : {} and destination pod : {}".format(str(e),dbname,source_pod, destination_pod))
+        #raise Exception("Error {} occurred while enabling replication for database {} between "
+        #                "source pod : {} and destination pod : {}".format(str(e),dbname,source_pod, destination_pod))
+        return 1
 
 
 def backup_internal_stages(destination_account, destination_pod, dbname):
@@ -1471,7 +1475,8 @@ def backup_internal_stages(destination_account, destination_pod, dbname):
         logger.info("Completed taking backup of internal stages in database {} from pod {}".format(dbname, destination_pod))
     except Exception as e:
         logger.error("Error {} occurred while taking backup of internal stages from pod {} in database {}".format(str(e),destination_pod, dbname))
-        raise Exception("Error {} occurred while taking backup of internal stages from pod {} in database {}".format(str(e),destination_pod, dbname))
+        # raise Exception("Error {} occurred while taking backup of internal stages from pod {} in database {}".format(str(e),destination_pod, dbname))
+        return 1
 
 
 def check_refresh_possibility(dest_pod):
@@ -1496,10 +1501,10 @@ def backup_shares_permissions(destination_account, destination_pod, dbname):
     by default snowflake refresh do not take care of permissions, taking backup of permissions given to outbound shares
     """
     try:
-        logger.info("Started taking backup of privileges in pod {}".format(destination_pod))
+        logger.info("Started taking backup of privileges assigned to shares in pod {}".format(destination_pod))
         connection, cursor = get_admin_connection(destination_account, destination_pod)
         cursor.execute("use database audit_archive")
-        cursor.execute("CREATE OR REPLACE TABLE audit_archive.public.dbgrants(created_on timestamp_ltz,privilege varchar,granted_on varchar,"
+        cursor.execute("CREATE TABLE IF NOT EXISTS audit_archive.public.dbgrants(created_on timestamp_ltz,privilege varchar,granted_on varchar,"
                        "name varchar,granted_to varchar,grantee_name varchar,grant_option varchar,granted_by varchar)")
         logger.info("Taking backup of permissions to shares in database {} from pod {}".format(dbname, destination_pod))
         cursor.execute("show shares")
@@ -1511,12 +1516,11 @@ def backup_shares_permissions(destination_account, destination_pod, dbname):
                 share_name = var[0]
                 cursor.execute("show grants to share {}".format(share_name))
                 cursor.execute("insert into audit_archive.public.dbgrants select * from table(result_scan(last_query_id()))")
-                cursor.execute("show grants on share {}".format(share_name))
-                cursor.execute("insert into audit_archive.public.dbgrants select * from table(result_scan(last_query_id()))")
-            logger.info("Completed taking backup of shares privileges in pod {}".format(destination_pod, dbname))
+            logger.info("Completed taking backup of privileges assigned to shares in pod {}".format(destination_pod, dbname))
     except Exception as e:
-        logger.error("Error {} occurred while taking backup of roles and privileges in pod {}".format(str(e),destination_pod))
-        raise Exception("Error {} occurred while taking backup of roles and privileges in pod {}".format(str(e),destination_pod))
+        logger.error("Error {} occurred while taking backup of privileges assigned to shares in pod {}".format(str(e),destination_pod))
+        # raise Exception("Error {} occurred while taking backup of roles and privileges in pod {}".format(str(e),destination_pod))
+        return 1
 
 
 def restore_stages_fileformats(destination_account, destination_pod, dbname, arc_techops_number):
@@ -1528,6 +1532,7 @@ def restore_stages_fileformats(destination_account, destination_pod, dbname, arc
         connection, cursor = get_admin_connection(destination_account, destination_pod)
         cursor.execute("use database {}".format(dbname))
         cursor.execute("show file formats in database {}_{}".format(dbname,arc_techops_number))
+        # after performing the refresh from prod to uat, there might be some schemas missing. So adding where condition
         cursor.execute("select 'create or replace file format '||\"schema_name\"||'.'||\"name\"||' CLONE '||\"database_name\"||'.'||\"schema_name\"||'.'||\"name\"||';' "
                        "from table(result_scan(last_query_id())) where \"schema_name\" in (select SCHEMA_NAME from information_schema.SCHEMATA)")
         result = cursor.fetchall()
@@ -1538,6 +1543,7 @@ def restore_stages_fileformats(destination_account, destination_pod, dbname, arc
             logger.info("Restoration of file formats is completed")
         logger.info("started restoration of external stages")
         cursor.execute("show stages in database {}_{}".format(dbname, arc_techops_number))
+        # after performing the refresh from prod to uat, there might be some schemas missing. So adding where condition
         cursor.execute("select 'create or replace stage '||\"schema_name\"||'.'||\"name\"||' CLONE '||\"database_name\"||'.'||\"schema_name\"||'.'||\"name\"||';' "
                        "from table(result_scan(last_query_id())) where \"type\"='EXTERNAL' and \"schema_name\" in (select SCHEMA_NAME from information_schema.SCHEMATA)")
         result = cursor.fetchall()
@@ -1563,7 +1569,8 @@ def restore_stages_fileformats(destination_account, destination_pod, dbname, arc
             logger.info("Restoration of internal stages is completed")
     except Exception as e:
         logger.error("Error : {} occurred to restore the file format / stages".format(str(e)))
-        raise Exception("Error : {} occurred to restore the file format / stages".format(str(e)))
+        # raise Exception("Error : {} occurred to restore the file format / stages".format(str(e)))
+        return 1
 
 
 def change_ownership_to_db_owner(destination_account, destination_pod, dbname):
@@ -1589,7 +1596,7 @@ def change_ownership_to_db_owner(destination_account, destination_pod, dbname):
             cursor.execute("GRANT OWNERSHIP ON ALL STREAMS IN SCHEMA {} to role {}_owner  COPY CURRENT GRANTS".format(schema_name,dbname))
             cursor.execute("GRANT OWNERSHIP ON ALL TASKS IN SCHEMA {} to role {}_owner  COPY CURRENT GRANTS".format(schema_name,dbname))
             logger.info("Granted ownership on all objects in schema {} to role {}_owner".format(schema_name,dbname))
-        logger.info("granted ownership on all objects in the database {} to role {}_owner".format(dbname,dbname))
+        logger.info("Successfully granted ownership on all objects in the database {} to role {}_owner".format(dbname,dbname))
     except Exception as e:
         logger.error("Error :{} occurred while changing the object owner ship in database : {}".format(str(e),dbname))
         raise Exception("Error occurred while changing the object owner ship in database : {}".format(str(e),dbname))
@@ -1605,17 +1612,17 @@ def restore_shares_permissions(destination_account, destination_pod, dbname, arc
         cursor.execute("use database {}".format(dbname))
         """
         once the database is renamed share will have permissions for renamed database or old database. So we will remove
-        the access to the database (db_<techops number>) and grant the permissions back to the share on the new database
+        the access to the old database (db_<techops number>) and grant the permissions back to the share on the new database
         copied from the production.
         """
         logger.info("Revoking and Granting permissions to shares on database objects")
         query = """
-        select 'REVOKE '||PRIVILEGE||' ON '||GRANTED_ON||' '||NAME||' FROM '||GRANTED_TO||' '||GRANTEE_NAME||';'
-        from audit_archive.public.dbgrants where granted_to='SHARE' and split_part(NAME,'.',0)='{}_{}'
-        union
-        select 'GRANT '||PRIVILEGE||' ON '||GRANTED_ON||' '||NAME||' TO '||GRANTED_TO||' '||GRANTEE_NAME||';'
+        select distinct 'REVOKE '||PRIVILEGE||' ON '||GRANTED_ON||' '||REPLACE(NAME,split_part(NAME,'.',0),split_part(NAME,'.',0)||'_{}')||' FROM '||GRANTED_TO||' '||GRANTEE_NAME||';'
         from audit_archive.public.dbgrants where granted_to='SHARE' and split_part(NAME,'.',0)='{}'
-        """.format(str(dbname).upper(),arc_techops_number,str(dbname).upper())
+        union
+        select distinct 'GRANT '||PRIVILEGE||' ON '||GRANTED_ON||' '||NAME||' TO '||GRANTED_TO||' '||GRANTEE_NAME||';'
+        from audit_archive.public.dbgrants where granted_to='SHARE' and split_part(NAME,'.',0)='{}'
+        """.format(arc_techops_number,str(dbname).upper(),str(dbname).upper())
         cursor.execute(query)
         result = cursor.fetchall()
         if len(result) > 0:

@@ -181,10 +181,10 @@ def main():
         """
         logger.info("Creating inventory tables stage_properties, stage_backup")
         # creating backup tables
-        destination_cursor.execute("create or replace table audit_archive.public.stage_properties "
+        destination_cursor.execute("create table if not exists audit_archive.public.stage_properties "
                                    "(dbname varchar,schemaname varchar, stagename varchar, parent_property varchar, "
                                    "property varchar, property_type varchar,property_value varchar, property_default varchar)")
-        destination_cursor.execute("create or replace table audit_archive.public.stage_backup"
+        destination_cursor.execute("create table if not exists audit_archive.public.stage_backup"
                                    "(dbname varchar,schemaname varchar,ordr int,def varchar)")
         """
         Snowflake replication work for database, in a Snowflake account there are multiple databases.
