@@ -1,15 +1,3 @@
-terraform {
-  required_providers {
-    aws = {
-      source = "hashicorp/aws"
-    }
-  }
-}
-
-provider "aws" {
-  region = "us-east-1"
-}
-
 # Create VPC
 resource "aws_vpc" "vpc" {
   cidr_block           = var.vpc_cidr
@@ -88,7 +76,7 @@ resource "aws_subnet" "database_subnet" {
 
 resource "aws_db_subnet_group" "default" {
   name       =  var.db_subnet_name
-  subnet_ids = [aws_subnet.database_subnet.id]
+  subnet_ids =  aws_subnet.database_subnet.*.id
 
   tags = {
     Name = "Database subnet group"

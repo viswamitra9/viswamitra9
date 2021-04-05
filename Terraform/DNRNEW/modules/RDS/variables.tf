@@ -64,20 +64,23 @@ variable "db_user" {
   default     = "postgres"
 }
 
-variable "db_password" {
-  description = "Password for the DB user"
-  type        = string
-  default     = "password1234"
-}
-
 variable "port" {
   description = "The port on which the DB accepts connections"
   type        = string
   default     = "5432"
 }
 
-variable "final_snapshot_identifier" {
-  description = "The RDS DB instance Name"
+variable "subnet_group_name" {
+  description = "subnet group name"
   type        = string
-  default     = "dnr-dev-pg-finalsnapshot"
+}
+
+variable "security_group_id" {
+  description = "subnet group name"
+  type        = list(string)
+}
+
+variable "kms_key_id" {
+  description = "kms key id"
+  type        = string
 }

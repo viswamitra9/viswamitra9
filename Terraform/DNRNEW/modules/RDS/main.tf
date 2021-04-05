@@ -1,3 +1,8 @@
+resource "random_string" "random" {
+  length           = 16
+  special          = false
+}
+
 resource "aws_db_instance" "dnr-dev-rds" {
   identifier = var.db_instance_name
 
@@ -5,7 +10,7 @@ resource "aws_db_instance" "dnr-dev-rds" {
   engine_version = var.engine_version
   name           = var.db_name
   username       = var.db_user
-  password       = var.db_password
+  password       = random_string.random.id
   port           = var.port
   instance_class = var.instance_class
 
@@ -13,16 +18,23 @@ resource "aws_db_instance" "dnr-dev-rds" {
   max_allocated_storage = var.max_allocated_storage
   allocated_storage     = var.storage
 
-  db_subnet_group_name = aws_db_subnet_group.this.name
+  db_subnet_group_name = var.subnet_group_name
 
-  vpc_security_group_ids = [aws_security_group.this.id]
+  vpc_security_group_ids = var.security_group_id
+
+  skip_final_snapshot       = true
+  backup_retention_period = 0
+  apply_immediately = true
+
+  kms_key_id = var.kms_key_id
+
+  multi_az = true
+
+  storage_encrypted = true
 
   copy_tags_to_snapshot     = true
-  skip_final_snapshot       = true
-  final_snapshot_identifier = var.final_snapshot_identifier
 
   tags = {
-    Name        = var.db_name
     environment = var.environment
   }
 }

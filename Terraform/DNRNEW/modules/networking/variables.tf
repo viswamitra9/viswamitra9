@@ -68,16 +68,10 @@ variable "database_subnet_names" {
   default = ["dnr-dbsubnet-1-dev","dnr-dbsubnet-2-dev"]
 }
 
-variable "db_subnet_name" {
-  description = "name of the database subnet"
-  type = string
-  default = "dnr-dbsubnet-dev"
-}
-
 variable "database_subnets_cidr" {
   description = "database server subnet cidr"
   type = list(string)
-  default = ["10.0.4.0/24","10.0.5.0/24"]
+  default = ["10.0.5.0/24","10.0.6.0/24"]
 }
 
 variable "environment" {
@@ -108,4 +102,10 @@ variable "vpc_security_group_name" {
   description = "name of the vpc security group"
   type = string
   default = "dnr-secgroup-dev"
+}
+
+variable "db_subnet_name" {
+description = "name database subnet group"
+type = string
+default = "dnr-dbsubnetgroup-dev"
 }

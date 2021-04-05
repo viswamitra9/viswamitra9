@@ -15,3 +15,8 @@ variable "s3_buckets_name" {
   type = list(string)
   default = ["dnr-dev-truesource-sorce","dnr-dev-feasibility","dnr-dev-feasibility-archive"]
 }
+
+variable "kms_master_key_id" {
+description = "kms key id to encrypt the s3 bucket"
+type = string
+}
