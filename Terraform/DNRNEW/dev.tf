@@ -16,3 +16,9 @@ subnet_group_name = module.networking.db_subnet_name
 security_group_id = [module.networking.aws_security_group_id]
 depends_on=[module.kms,module.networking]
 }
+module "pentaho" {
+  source = "./modules/pentaho"
+  security_group_id = [module.networking.aws_security_group_id]
+  subnet_id = module.networking.subnet_id
+  depends_on=[module.kms,module.networking]
+}
